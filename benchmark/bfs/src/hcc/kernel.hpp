@@ -249,7 +249,7 @@ BFS_in_GPU_kernel(tiled_index<1>& tidx,
     }
     //the new frontier is still within one-block limit;
     //stay in current kernel
-    // local_q.concatenate(next_wf, prefix_q, threadId);
+    local_q.concatenate(next_wf, prefix_q, threadId);
 
     no_of_nodes = tot_sum;
     tidx.barrier.wait();

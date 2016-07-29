@@ -44,8 +44,9 @@ struct Edge {
   int y;
 };
 
+using namespace hc;
 
-#include "kernel.cpp"
+#include "kernel.hpp"
 const int h_top = 1;
 const int zero = 0;
 

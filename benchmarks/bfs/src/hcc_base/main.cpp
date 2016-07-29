@@ -2,15 +2,15 @@
   Implementing Breadth first search on CUDA using algorithm given in DAC'10
   paper "An Effective GPU Implementation of Breadth-First Search"
 
-  Copyright (c) 2010 University of Illinois at Urbana-Champaign. 
+  Copyright (c) 2010 University of Illinois at Urbana-Champaign.
   All rights reserved.
 
-  Permission to use, copy, modify and distribute this software and its documentation for 
-  educational purpose is hereby granted without fee, provided that the above copyright 
-  notice and this permission notice appear in all copies of this software and that you do 
+  Permission to use, copy, modify and distribute this software and its documentation for
+  educational purpose is hereby granted without fee, provided that the above copyright
+  notice and this permission notice appear in all copies of this software and that you do
   not sell the software.
 
-  THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTY OF ANY KIND,EXPRESS, IMPLIED OR 
+  THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTY OF ANY KIND,EXPRESS, IMPLIED OR
   OTHERWISE.
 
   Author: Lijiuan Luo (lluo3@uiuc.edu)
@@ -46,10 +46,10 @@ const int zero = 0;
 ////////////////////////////////////////////////////////////////////////////////
 // Main Program
 ////////////////////////////////////////////////////////////////////////////////
-int main(int argc, char** argv) 
+int main(int argc, char** argv)
 {
   //the number of nodes in the graph
-  int num_of_nodes = 0; 
+  int num_of_nodes = 0;
   //the number of edges in the graph
   int num_of_edges = 0;
   struct pb_Parameters *params;
@@ -78,9 +78,9 @@ int main(int argc, char** argv)
   // allocate host memory
   Node* h_graph_nodes = (Node*) malloc(sizeof(Node)*num_of_nodes);
   int *color = (int*) malloc(sizeof(int)*num_of_nodes);
-  int start, edgeno;   
+  int start, edgeno;
   // initalize the memory
-  for( unsigned int i = 0; i < num_of_nodes; i++) 
+  for( unsigned int i = 0; i < num_of_nodes; i++)
   {
     fscanf(fp,"%d %d",&start,&edgeno);
     h_graph_nodes[i].x = start;
@@ -100,7 +100,7 @@ int main(int argc, char** argv)
     h_graph_edges[i].y = cost;
   }
   if(fp)
-    fclose(fp);    
+    fclose(fp);
 
   // allocate mem for the result on host side
   int* h_cost = (int*) malloc( sizeof(int)*num_of_nodes);
@@ -124,8 +124,8 @@ int main(int argc, char** argv)
 
   printf("Starting GPU kernel\n");
   pb_SwitchToTimer(&timers, pb_TimerID_KERNEL);
-  
-  int num_of_blocks; 
+
+  int num_of_blocks;
   int num_of_threads_per_block;
 
   tail[0] = h_top;
@@ -150,11 +150,11 @@ int main(int argc, char** argv)
       num_of_threads_per_block = NUM_BIN;
     if(num_t>MAX_THREADS_PER_BLOCK)
     {
-      num_of_blocks = (int)ceil(num_t/(double)MAX_THREADS_PER_BLOCK); 
+      num_of_blocks = (int)ceil(num_t/(double)MAX_THREADS_PER_BLOCK);
       num_of_threads_per_block = MAX_THREADS_PER_BLOCK;
     }
-    if(num_of_blocks == 1)//will call "BFS_in_GPU_kernel" 
-      num_of_threads_per_block = MAX_THREADS_PER_BLOCK; 
+    if(num_of_blocks == 1)//will call "BFS_in_GPU_kernel"
+      num_of_threads_per_block = MAX_THREADS_PER_BLOCK;
     if(num_of_blocks >1 && num_of_blocks <= NUM_SM)// will call "BFS_kernel_multi_blk_inGPU"
       num_of_blocks = NUM_SM;
 

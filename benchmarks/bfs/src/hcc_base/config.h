@@ -2,7 +2,7 @@
 #define NUM_SM 14 //the number of Streaming Multiprocessors; 15 for Fermi architecture 30 for G280 at the moment of this document
 #define NUM_BIN 8 //the number of duplicated frontiers used in BFS_kernel_multi_blk_inGPU
 #define EXP 3 // EXP = log(NUM_BIN), assuming NUM_BIN is still power of 2 in the future architecture
-	//using EXP and shifting can speed up division operation 
+	//using EXP and shifting can speed up division operation
 #define MOD_OP 7 // This variable is also related with NUM_BIN; may change in the future architecture;
 	//using MOD_OP and "bitwise and" can speed up mod operation
 #define INF 2147483647//2^31-1

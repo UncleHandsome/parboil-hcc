@@ -2,15 +2,15 @@
   Implementing Breadth first search on CUDA using algorithm given in DAC'10
   paper "An Effective GPU Implementation of Breadth-First Search"
 
-  Copyright (c) 2010 University of Illinois at Urbana-Champaign. 
+  Copyright (c) 2010 University of Illinois at Urbana-Champaign.
   All rights reserved.
 
-  Permission to use, copy, modify and distribute this software and its documentation for 
-  educational purpose is hereby granted without fee, provided that the above copyright 
-  notice and this permission notice appear in all copies of this software and that you do 
+  Permission to use, copy, modify and distribute this software and its documentation for
+  educational purpose is hereby granted without fee, provided that the above copyright
+  notice and this permission notice appear in all copies of this software and that you do
   not sell the software.
 
-  THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTY OF ANY KIND,EXPRESS, IMPLIED OR 
+  THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTY OF ANY KIND,EXPRESS, IMPLIED OR
   OTHERWISE.
 
   Author: Lijiuan Luo (lluo3@uiuc.edu)
@@ -22,9 +22,9 @@ Define colors for BFS
 1) the definition of White, gray and black comes from the text book "Introduction to Algorithms"
 2) For path search problems, people may choose to use different colors to record the found paths.
 Therefore we reserve numbers (0-16677216) for this purpose. Only nodes with colors bigger than
-UP_LIMIT are free to visit 
+UP_LIMIT are free to visit
 3) We define two gray shades to differentiate between the new frontier nodes and the old frontier nodes that
- have not been marked BLACK 
+ have not been marked BLACK
 *************/
 
 #define UP_LIMIT 16677216//2^24
@@ -43,7 +43,7 @@ volatile __device__ int no_of_nodes_vol = 0;
 volatile __device__ int stay_vol = 0;
 
 /*****************************************************************************
-This is the  most general version of BFS kernel, i.e. no assumption about #block in the grid  
+This is the  most general version of BFS kernel, i.e. no assumption about #block in the grid
 \param q1: the array to hold the current frontier
 \param q2: the array to hold the new frontier
 \param g_graph_nodes: the nodes in the input graph
@@ -51,24 +51,24 @@ This is the  most general version of BFS kernel, i.e. no assumption about #block
 \param g_color: the colors of nodes
 \param g_cost: the costs of nodes
 \param no_of_nodes: the number of nodes in the current frontier
-\param tail: pointer to the location of the tail of the new frontier. *tail is the size of the new frontier 
+\param tail: pointer to the location of the tail of the new frontier. *tail is the size of the new frontier
 \param gray_shade: the shade of the gray in current BFS propagation. See GRAY0, GRAY1 macro definitions for more details
 \param k: the level of current propagation in the BFS tree. k= 0 for the first propagation.
 ***********************************************************************/
 __global__ void
-BFS_kernel(int * q1, 
-           int * q2, 
-           Node* g_graph_nodes, 
-           Edge* g_graph_edges, 
-           int* g_color, 
-           int * g_cost, 
-           int no_of_nodes, 
-           int * tail, 
-           int gray_shade, 
-           int k) 
+BFS_kernel(int * q1,
+           int * q2,
+           Node* g_graph_nodes,
+           Edge* g_graph_edges,
+           int* g_color,
+           int * g_cost,
+           int no_of_nodes,
+           int * tail,
+           int gray_shade,
+           int k)
 {
   __shared__ int local_q_tail;//the tails of each local warp-level queue
-  __shared__ int local_q[NUM_BIN*W_QUEUE_SIZE];//the local warp-level queues 
+  __shared__ int local_q[NUM_BIN*W_QUEUE_SIZE];//the local warp-level queues
   //current w-queue, a.k.a prefix sum
   __shared__ int shift;
 
@@ -81,7 +81,7 @@ BFS_kernel(int * q1,
   int tid = blockIdx.x*MAX_THREADS_PER_BLOCK + threadIdx.x;
   if( tid<no_of_nodes)
   {
-    int pid = q1[tid]; //the current frontier node, or the parent node of the new frontier nodes 
+    int pid = q1[tid]; //the current frontier node, or the parent node of the new frontier nodes
     g_color[pid] = BLACK;
     int cur_cost = g_cost[pid];
     //into
@@ -113,7 +113,7 @@ BFS_kernel(int * q1,
   __syncthreads();
 
   if(threadIdx.x == 0){
-    int tot_sum = local_q_tail; 
+    int tot_sum = local_q_tail;
 
     //the offset or "shift" of the block-level queue within the grid-level queue
     //is determined by atomic operation
@@ -128,7 +128,7 @@ BFS_kernel(int * q1,
   while(local_shift < local_q_tail){
     q2[shift + local_shift] = local_q[local_shift];
     local_shift += blockDim.x;//multiple threads are copying elements at the same time,
-    //so we shift by multiple elements for next iteration  
+    //so we shift by multiple elements for next iteration
   }
 }
-#endif 
+#endif

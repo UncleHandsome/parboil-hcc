@@ -318,7 +318,7 @@ BFS_kernel_multi_blk_inGPU(tiled_index<1>& tidx,
      if(threadId == 0)
        no_of_nodes_sm = no_of_nodes_vol[0];
      tidx.barrier.wait();
- 
+
      int tid = blockId*MAX_THREADS_PER_BLOCK + threadId;
      if( tid<no_of_nodes_sm)
      {
@@ -328,21 +328,21 @@ BFS_kernel_multi_blk_inGPU(tiled_index<1>& tidx,
            pid = atomic_fetch_or(&q1[tid], 0);
        else
            pid = atomic_fetch_or(&q2[tid], 0);
- 
+
        // Visit a node from the current frontier; update costs, colors, and
        // output queue
        visit_node(pid, threadId & MOD_OP, local_q, g_graph_nodes, g_graph_edges,
                overflow, g_color, g_cost, gray_shade);
      }
      tidx.barrier.wait();
- 
+
      // Compute size of the output and allocate space in the global queue
      if(threadId == 0){
        int tot_sum = local_q.size_prefix_sum(prefix_q);
        shift = atomic_fetch_add(&tail[0], tot_sum);
      }
      tidx.barrier.wait();
- 
+
      // Copy to the current output queue in global memory
      int q_i = threadId & MOD_OP;
      int local_shift = threadId >> EXP;
@@ -361,7 +361,7 @@ BFS_kernel_multi_blk_inGPU(tiled_index<1>& tidx,
        else
          gray_shade = GRAY0;
      }
- 
+
      //synchronize among all the blks
      start_global_barrier(kt+1, &count[0], tidx);
      if(blockId == 0 && threadId == 0){

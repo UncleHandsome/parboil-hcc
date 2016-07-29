@@ -23,14 +23,22 @@
 #include <parboil.h>
 #include <deque>
 #include <iostream>
+#include <hc.hpp>
 
 #include "config.h"
 FILE *fp;
+struct Node {
+  int x;
+  int y;
+};
+struct Edge {
+  int x;
+  int y;
+};
 
-typedef int2 Node;
-typedef int2 Edge;
+using namespace hc;
 
-#include "kernel.cu"
+#include "kernel.hpp"
 //Somehow "cudaMemset" does not work. So I use cudaMemcpy of constant variables for initialization
 const int h_top = 1;
 const int zero = 0;
@@ -104,51 +112,33 @@ int main(int argc, char** argv)
   pb_SwitchToTimer(&timers, pb_TimerID_COPY);
 
   //Copy the Node list to device memory
-  Node* d_graph_nodes;
-  cudaMalloc((void**) &d_graph_nodes, sizeof(Node)*num_of_nodes);
-  cudaMemcpy(d_graph_nodes, h_graph_nodes, sizeof(Node)*num_of_nodes, cudaMemcpyHostToDevice);
-  //Copy the Edge List to device Memory
-  Edge* d_graph_edges;
-  cudaMalloc((void**) &d_graph_edges, sizeof(Edge)*num_of_edges);
-  cudaMemcpy(d_graph_edges, h_graph_edges, sizeof(Edge)*num_of_edges, cudaMemcpyHostToDevice);
+  array_view<Node> d_graph_nodes(num_of_nodes, h_graph_nodes);
+  array_view<Edge> d_graph_edges(num_of_edges, h_graph_edges);
 
-  int* d_color;
-  cudaMalloc((void**) &d_color, sizeof(int)*num_of_nodes);
-  int* d_cost;
-  cudaMalloc((void**) &d_cost, sizeof(int)*num_of_nodes);
-  int * d_q1;
-  int * d_q2;
-  cudaMalloc( (void**) &d_q1, sizeof(int)*num_of_nodes);
-  cudaMalloc( (void**) &d_q2, sizeof(int)*num_of_nodes);
-  int * tail;
-  cudaMalloc( (void**) &tail, sizeof(int));
-  int *front_cost_d;
-  cudaMalloc( (void**) &front_cost_d, sizeof(int));
-  cudaMemcpy( d_color, color, sizeof(int)*num_of_nodes, cudaMemcpyHostToDevice);
-  cudaMemcpy( d_cost, h_cost, sizeof(int)*num_of_nodes, cudaMemcpyHostToDevice);
-
-  //bind the texture memory with global memory
-  cudaBindTexture(0,g_graph_node_ref,d_graph_nodes, sizeof(Node)*num_of_nodes);
-  cudaBindTexture(0,g_graph_edge_ref,d_graph_edges,sizeof(Edge)*num_of_edges);
+  array_view<int> d_color(num_of_nodes, color);
+  array_view<int> d_cost(num_of_nodes, h_cost);
+  array_view<int> d_q1(num_of_nodes);
+  array_view<int> d_q2(num_of_nodes);
+  array_view<int> tail(1);
+  array_view<int> front_cost_d(1);
 
   printf("Starting GPU kernel\n");
-  (cudaThreadSynchronize());
   pb_SwitchToTimer(&timers, pb_TimerID_KERNEL);
   
   int num_of_blocks; 
   int num_of_threads_per_block;
 
-  cudaMemcpy(tail,&h_top,sizeof(int),cudaMemcpyHostToDevice);
-  cudaMemcpy(&d_cost[source],&zero,sizeof(int),cudaMemcpyHostToDevice);
+  tail[0] = h_top;
+  d_cost[source] = zero;
+  d_q1[0] = source;
 
-  cudaMemcpy( &d_q1[0], &source, sizeof(int), cudaMemcpyHostToDevice);
   int num_t;//number of threads
   int k=0;//BFS level index
 
   do
   {
-    (cudaMemcpy(&num_t, tail, sizeof(int), cudaMemcpyDeviceToHost) );
-    (cudaMemcpy(tail,&zero,sizeof(int),cudaMemcpyHostToDevice));
+    num_t = tail[0];
+    tail[0] = zero;
 
     if(num_t == 0){//frontier is empty
       break;
@@ -168,16 +158,22 @@ int main(int argc, char** argv)
     if(num_of_blocks >1 && num_of_blocks <= NUM_SM)// will call "BFS_kernel_multi_blk_inGPU"
       num_of_blocks = NUM_SM;
 
-    dim3  grid( num_of_blocks, 1, 1);
-    dim3  threads( num_of_threads_per_block, 1, 1);
+    extent<1>  grid(num_of_blocks * num_of_threads_per_block);
+    tiled_extent<1>  tile = grid.tile(num_of_threads_per_block);
 
     if(k%2 == 0){
-      BFS_kernel<<< grid, threads >>>(d_q1,d_q2, d_graph_nodes, 
-          d_graph_edges, d_color, d_cost, num_t, tail,GRAY0,k);
+        parallel_for_each(tile, [&] (tiled_index<1> tidx) [[hc]]
+                {
+                BFS_kernel(tidx, d_q1,d_q2, d_graph_nodes,
+                    d_graph_edges, d_color, d_cost, num_t, tail,GRAY0,k,d_overflow);
+                });
     }
     else{
-      BFS_kernel<<< grid, threads >>>(d_q2,d_q1, d_graph_nodes, 
-          d_graph_edges, d_color, d_cost, num_t, tail, GRAY1,k);
+        parallel_for_each(tile, [&] (tiled_index<1> tidx) [[hc]]
+                {
+                BFS_kernel(tidx, d_q1,d_q2, d_graph_nodes,
+                    d_graph_edges, d_color, d_cost, num_t, tail,GRAY0,k,d_overflow);
+                });
     }
     k++;
   }

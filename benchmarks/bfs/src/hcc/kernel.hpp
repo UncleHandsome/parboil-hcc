@@ -9,8 +9,7 @@
   Implementing Breadth first search on CUDA using algorithm given in DAC'10
   paper "An Effective GPU Implementation of Breadth-First Search"
 
-  Copyright (c) 2010 University of Illinois at Urbana-Champaign.
-  All rights reserved.
+  Copyright (c) 2010 University of Illinois at Urbana-Champaign.  All rights reserved.
 
   Permission to use, copy, modify and distribute this software and its documentation for
   educational purpose is hereby granted without fee, provided that the above copyright

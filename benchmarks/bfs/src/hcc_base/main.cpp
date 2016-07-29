@@ -165,35 +165,26 @@ int main(int argc, char** argv)
         parallel_for_each(tile, [&] (tiled_index<1> tidx) [[hc]]
                 {
                 BFS_kernel(tidx, d_q1,d_q2, d_graph_nodes,
-                    d_graph_edges, d_color, d_cost, num_t, tail,GRAY0,k,d_overflow);
+                    d_graph_edges, d_color, d_cost, num_t, tail,GRAY0,k);
                 });
     }
     else{
         parallel_for_each(tile, [&] (tiled_index<1> tidx) [[hc]]
                 {
                 BFS_kernel(tidx, d_q1,d_q2, d_graph_nodes,
-                    d_graph_edges, d_color, d_cost, num_t, tail,GRAY0,k,d_overflow);
+                    d_graph_edges, d_color, d_cost, num_t, tail,GRAY0,k);
                 });
     }
     k++;
   }
   while(1);
-  cudaThreadSynchronize();
   pb_SwitchToTimer(&timers, pb_TimerID_COPY);
   printf("GPU kernel done\n");
 
   // copy result from device to host
-  cudaMemcpy(h_cost, d_cost, sizeof(int)*num_of_nodes, cudaMemcpyDeviceToHost);
-  cudaMemcpy(color, d_color, sizeof(int)*num_of_nodes, cudaMemcpyDeviceToHost);
-  cudaUnbindTexture(g_graph_node_ref);
-  cudaUnbindTexture(g_graph_edge_ref);
+  d_cost.synchronize();
+  d_color.synchronize();
 
-  cudaFree(d_graph_nodes);
-  cudaFree(d_graph_edges);
-  cudaFree(d_color);
-  cudaFree(d_cost);
-  cudaFree(tail);
-  cudaFree(front_cost_d);
   //Store the result into a file
   pb_SwitchToTimer(&timers, pb_TimerID_IO);
   FILE *fp = fopen(params->outFile,"w");

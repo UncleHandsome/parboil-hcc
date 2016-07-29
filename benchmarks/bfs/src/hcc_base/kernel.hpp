@@ -35,12 +35,6 @@ UP_LIMIT are free to visit
 #define BLACK 16677221
 
 #include "config.h"
-texture<Node> g_graph_node_ref;
-texture<Edge> g_graph_edge_ref;
-
-volatile __device__ int count = 0;
-volatile __device__ int no_of_nodes_vol = 0;
-volatile __device__ int stay_vol = 0;
 
 /*****************************************************************************
 This is the  most general version of BFS kernel, i.e. no assumption about #block in the grid
@@ -55,79 +49,82 @@ This is the  most general version of BFS kernel, i.e. no assumption about #block
 \param gray_shade: the shade of the gray in current BFS propagation. See GRAY0, GRAY1 macro definitions for more details
 \param k: the level of current propagation in the BFS tree. k= 0 for the first propagation.
 ***********************************************************************/
-__global__ void
-BFS_kernel(int * q1,
-           int * q2,
-           Node* g_graph_nodes,
-           Edge* g_graph_edges,
-           int* g_color,
-           int * g_cost,
+void
+BFS_kernel(tiled_index<1>& tidx,
+           array_view<int>& q1,
+           array_view<int>& q2,
+           array_view<Node>& g_graph_nodes,
+           array_view<Edge>& g_graph_edges,
+           array_view<int>& g_color,
+           array_view<int>& g_cost,
            int no_of_nodes,
-           int * tail,
+           array_view<int>& tail,
            int gray_shade,
-           int k)
+           int k) [[hc]]
 {
-  __shared__ int local_q_tail;//the tails of each local warp-level queue
-  __shared__ int local_q[NUM_BIN*W_QUEUE_SIZE];//the local warp-level queues
+  tile_static int local_q_tail;//the tails of each local warp-level queue
+  tile_static int local_q[NUM_BIN*W_QUEUE_SIZE];//the local warp-level queues
   //current w-queue, a.k.a prefix sum
-  __shared__ int shift;
+  tile_static int shift;
 
-  if(threadIdx.x == 0){
+  int threadId = tidx.local[0];
+  int blockId = tidx.tile[0];
+ if(threadId == 0){
     local_q_tail = 0;//initialize the tail of w-queue
   }
-  __syncthreads();
+  tidx.barrier.wait();
 
   //first, propagate and add the new frontier elements into w-queues
-  int tid = blockIdx.x*MAX_THREADS_PER_BLOCK + threadIdx.x;
+  int tid = blockId*MAX_THREADS_PER_BLOCK + threadId;
   if( tid<no_of_nodes)
   {
     int pid = q1[tid]; //the current frontier node, or the parent node of the new frontier nodes
     g_color[pid] = BLACK;
     int cur_cost = g_cost[pid];
     //into
-    Node cur_node = tex1Dfetch(g_graph_node_ref,pid);
+    Node cur_node = g_graph_nodes[pid];
     for(int i=cur_node.x; i<cur_node.y + cur_node.x; i++)//visit each neighbor of the
       //current frontier node.
     {
-      Edge cur_edge = tex1Dfetch(g_graph_edge_ref,i);
+      Edge cur_edge = g_graph_edges[i];
       int id = cur_edge.x;
       int cost = cur_edge.y;
       cost += cur_cost;
-      int orig_cost = atomicMin(&g_cost[id],cost);
+      int orig_cost = atomic_fetch_min(&g_cost[id],cost);
       if(orig_cost > cost){//the node should be visited
         if(g_color[id] > UP_LIMIT){
-          int old_color = atomicExch(&g_color[id],gray_shade);
+          int old_color = atomic_exchange(&g_color[id],gray_shade);
           //this guarantees that only one thread will push this node
           //into a queue
           if(old_color != gray_shade) {
 
             //atomic operation guarantees the correctness
             //even if multiple warps are executing simultaneously
-            int index = atomicAdd(&local_q_tail,1);
+            int index = atomic_fetch_add(&local_q_tail,1);
             local_q[index] = id;
           }
         }
       }
     }
   }
-  __syncthreads();
+  tidx.barrier.wait();
 
-  if(threadIdx.x == 0){
+  if(threadId == 0){
     int tot_sum = local_q_tail;
 
     //the offset or "shift" of the block-level queue within the grid-level queue
     //is determined by atomic operation
-    shift = atomicAdd(tail,tot_sum);
+    shift = atomic_fetch_add(&tail[0],tot_sum);
   }
-  __syncthreads();
+  tidx.barrier.wait();
 
 
-  int local_shift = threadIdx.x;//shift within a w-queue
+  int local_shift = threadId;//shift within a w-queue
 
   //loop unrolling was originally used for better performance, but removed for better readability
   while(local_shift < local_q_tail){
     q2[shift + local_shift] = local_q[local_shift];
-    local_shift += blockDim.x;//multiple threads are copying elements at the same time,
+    local_shift += tidx.tile_dim[0];//multiple threads are copying elements at the same time,
     //so we shift by multiple elements for next iteration
   }
 }

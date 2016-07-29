@@ -66,12 +66,12 @@ struct LocalQueues {
 
   // Append 'value' to queue number 'index'.  If queue is full, the
   // append operation fails and *overflow is set to 1.
-  void append(int index, int *overflow, int value) [[hc]] {
+  void append(int index, array_view<int>& overflow, int value) [[hc]] {
     // Queue may be accessed concurrently, so
     // use an atomic operation to reserve a queue index.
     int tail_index = atomic_fetch_add(&tail[index], 1);
     if (tail_index >= W_QUEUE_SIZE)
-      *overflow = 1;
+      overflow[0] = 1;
     else
       elems[index][tail_index] = value;
   }
@@ -111,6 +111,20 @@ struct LocalQueues {
       local_shift += sharers[q_i];
     }
   }
+
+  void concatenate(array_view<int>& dst, int (&prefix_q)[NUM_BIN], int threadId) [[hc]] {
+    // Thread n processes elems[n % NUM_BIN][n / NUM_BIN, ...]
+    int q_i = threadId & MOD_OP; // w-queue index
+    int local_shift = threadId >> EXP; // shift within a w-queue
+
+    while(local_shift < tail[q_i]){
+      dst[prefix_q[q_i] + local_shift] = elems[q_i][local_shift];
+
+      //multiple threads are copying elements at the same time,
+      //so we shift by multiple elements for next iteration
+      local_shift += sharers[q_i];
+    }
+  }
 };
 
 //Inter-block sychronization
@@ -119,9 +133,10 @@ void start_global_barrier(int fold, int* count, tiled_index<1>& tidx) [[hc]] {
   tidx.barrier.wait();
 
   if(tidx.tile[0] == 0){
-    atomic_fetch_aa(count, 1);
-    while( *count < NUM_SM*fold){
-      ;
+    atomic_fetch_add(count, 1);
+    int count_val = atomic_fetch_or(count, 0);
+    while( count_val < NUM_SM*fold){
+        count_val = atomic_fetch_or(count, 0);
     }
   }
   tidx.barrier.wait();
@@ -139,8 +154,8 @@ void
 visit_node(int pid,
 	   int index,
 	   LocalQueues &local_q,
-       array_view<Node>& g_graph_node_ref,
-       array_view<Node>& g_graph_edge_ref,
+       array_view<Node>& g_graph_node,
+       array_view<Edge>& g_graph_edge,
 	   array_view<int>& overflow,
 	   array_view<int>& g_color,
 	   array_view<int>& g_cost,
@@ -148,11 +163,11 @@ visit_node(int pid,
 {
   g_color[pid] = BLACK;		// Mark this node as visited
   int cur_cost = g_cost[pid];	// Look up shortest-path distance to this node
-  Node cur_node = g_graph_node_ref[pid];
+  Node cur_node = g_graph_node[pid];
 
   // For each outgoing edge
   for(int i = cur_node.x; i < cur_node.y + cur_node.x; i++) {
-    Edge cur_edge = g_graph_edge_ref[i];
+    Edge cur_edge = g_graph_edge[i];
     int id = cur_edge.x;
     int cost = cur_edge.y;
     cost += cur_cost;
@@ -161,7 +176,7 @@ visit_node(int pid,
     // If this outgoing edge makes a shorter path than any previously
     // discovered path
     if(orig_cost > cost){
-      int old_color = atomic_fetch_exchange(&g_color[id],gray_shade);
+      int old_color = atomic_exchange(&g_color[id],gray_shade);
       if(old_color != gray_shade) {
 	//push to the queue
 	local_q.append(index, overflow, id);
@@ -191,20 +206,19 @@ BFS_in_GPU_kernel(tiled_index<1>& tidx,
                   array_view<int>& tail,
                   int gray_shade,
                   int k,
-                  array_view<int>& overflow)
+                  array_view<int>& overflow) [[hc]]
 {
-  tiled_static LocalQueues local_q;
-  tiled_static int prefix_q[NUM_BIN];
-
-  //next/new wave front
-  tiled_static int next_wf[MAX_THREADS_PER_BLOCK];
-  tiled_static int  tot_sum;
+  tile_static LocalQueues local_q;
+  tile_static int prefix_q[NUM_BIN];
+  tile_static int next_wf[MAX_THREADS_PER_BLOCK];
+  tile_static int  tot_sum;
   int threadId = tidx.local[0];
+  int blockId = tidx.tile[0];
   if(threadId == 0)	
     tot_sum = 0;//total number of new frontier nodes
   while(1){//propage through multiple BFS levels until the wavfront overgrows one-block limit
     if(threadId < NUM_BIN){
-      local_q.reset(threadId, tidx.local_dim[0]);
+      local_q.reset(threadId, tidx.tile_dim[0]);
     }
     tidx.barrier.wait();
     int tid = blockId*MAX_THREADS_PER_BLOCK + threadId;
@@ -223,29 +237,27 @@ BFS_in_GPU_kernel(tiled_index<1>& tidx,
     }
     tidx.barrier.wait();
     if(threadId == 0){
-      *tail = tot_sum = local_q.size_prefix_sum(prefix_q);
+      tail[0] = tot_sum = local_q.size_prefix_sum(prefix_q);
     }
     tidx.barrier.wait();
 
     if(tot_sum == 0)//the new frontier becomes empty; BFS is over
       return;
-    if(tot_sum <= MAX_THREADS_PER_BLOCK){
-      //the new frontier is still within one-block limit;
-      //stay in current kernel
-      local_q.concatenate(next_wf, prefix_q);
-      tidx.barrier.wait();
-      no_of_nodes = tot_sum;
-      if(threadId == 0){
-        if(gray_shade == GRAY0)
-          gray_shade = GRAY1;
-        else
-          gray_shade = GRAY0;
-      }
+    if (tot_sum > MAX_THREADS_PER_BLOCK) {
+        local_q.concatenate(q2, prefix_q, threadId);
+        return;
     }
-    else{
-      //the new frontier outgrows one-block limit; terminate current kernel
-      local_q.concatenate(q2, prefix_q);
-      return;
+    //the new frontier is still within one-block limit;
+    //stay in current kernel
+    // local_q.concatenate(next_wf, prefix_q, threadId);
+
+    no_of_nodes = tot_sum;
+    tidx.barrier.wait();
+    if(threadId == 0){
+        if(gray_shade == GRAY0)
+            gray_shade = GRAY1;
+        else
+            gray_shade = GRAY0;
     }
   }//while
 
@@ -281,88 +293,98 @@ BFS_kernel_multi_blk_inGPU(tiled_index<1>& tidx,
                            array_view<int>& switch_k,
                            array_view<int>& max_nodes_per_block,
                            array_view<int>& global_kt,
-                           array_view<int>& overflow
+                           array_view<int>& overflow,
                            array_view<int>& count,
                            array_view<int>& no_of_nodes_vol,
-                           array_view<int>& stay_vol)
+                           array_view<int>& stay_vol) [[hc]]
 {
-  tiled_static LocalQueues local_q;
-  tiled_static int prefix_q[NUM_BIN];
-  tiled_static int shift;
-  tiled_static int no_of_nodes_sm;
-  tiled_static int odd_time;// the odd level of propagation within current kernel
-  int threadId = tidx.local[0];
-  int blockId = tidx.tile[0];
-  if(threadId == 0){
-    odd_time = 1;//true;
-    if(blockId == 0)
-      no_of_nodes_vol[0] = *no_of_nodes;
-  }
-  int kt = atomic_fetch_or(global_kt,0);// the total count of GPU global synchronization
-  while (1){//propagate through multiple levels
-    if(threadId < NUM_BIN){
-      local_q.reset(threadId, tidx.tile_dim[0]);
-    }
-    if(threadId == 0)
-      no_of_nodes_sm = no_of_nodes_vol[0];
-    tidx.barrier.wait();
+   tile_static LocalQueues local_q;
+   tile_static int prefix_q[NUM_BIN];
+   tile_static int shift;
+   tile_static int no_of_nodes_sm;
+   tile_static int odd_time;// the odd level of propagation within current kernel
+   int threadId = tidx.local[0];
+   int blockId = tidx.tile[0];
+   if(threadId == 0){
+     odd_time = 1;//true;
+     if(blockId == 0)
+       no_of_nodes_vol[0] = no_of_nodes[0];
+   }
+   int kt = atomic_fetch_or(&global_kt[0],0);// the total count of GPU global synchronization
+   while (1){//propagate through multiple levels
+     if(threadId < NUM_BIN){
+       local_q.reset(threadId, tidx.tile_dim[0]);
+     }
+     if(threadId == 0)
+       no_of_nodes_sm = no_of_nodes_vol[0];
+     tidx.barrier.wait();
+ 
+     int tid = blockId*MAX_THREADS_PER_BLOCK + threadId;
+     if( tid<no_of_nodes_sm)
+     {
+       // Read a node ID from the current input queue
+         int pid = 0;
+       if (odd_time)
+           pid = atomic_fetch_or(&q1[tid], 0);
+       else
+           pid = atomic_fetch_or(&q2[tid], 0);
+ 
+       // Visit a node from the current frontier; update costs, colors, and
+       // output queue
+       visit_node(pid, threadId & MOD_OP, local_q, g_graph_nodes, g_graph_edges,
+               overflow, g_color, g_cost, gray_shade);
+     }
+     tidx.barrier.wait();
+ 
+     // Compute size of the output and allocate space in the global queue
+     if(threadId == 0){
+       int tot_sum = local_q.size_prefix_sum(prefix_q);
+       shift = atomic_fetch_add(&tail[0], tot_sum);
+     }
+     tidx.barrier.wait();
+ 
+     // Copy to the current output queue in global memory
+     int q_i = threadId & MOD_OP;
+     int local_shift = threadId >> EXP;
+     while (local_shift < local_q.tail[q_i]) {
+         if (odd_time)
+             q2[shift+prefix_q[q_i]+local_shift] = local_q.elems[q_i][local_shift];
+         else
+             q1[shift+prefix_q[q_i]+local_shift] = local_q.elems[q_i][local_shift];
+         local_shift += local_q.sharers[q_i];
+     }
 
-    int tid = blockId*MAX_THREADS_PER_BLOCK + threadId;
-    if( tid<no_of_nodes_sm)
-    {
-      // Read a node ID from the current input queue
-      int *input_queue = odd_time ? q1 : q2;
-      int pid = atomicOr((int *)&input_queue[tid], 0);
-
-      // Visit a node from the current frontier; update costs, colors, and
-      // output queue
-      visit_node(pid, threadId & MOD_OP, local_q, g_graph_nodes, g_graph_edges,
-              overflow, g_color, g_cost, gray_shade);
-    }
-    tidx.barrier.wait();
-
-    // Compute size of the output and allocate space in the global queue
-    if(threadId == 0){
-      int tot_sum = local_q.size_prefix_sum(prefix_q);
-      shift = atomic_fetch_add(tail, tot_sum);
-    }
-    tidx.barrier.wait();
-
-    // Copy to the current output queue in global memory
-    int *output_queue = odd_time ? q2 : q1;
-    local_q.concatenate(output_queue + shift, prefix_q);
-
-    if(threadId == 0){
-      odd_time = (odd_time+1)%2;
-      if(gray_shade == GRAY0)
-        gray_shade = GRAY1;
-      else
-        gray_shade = GRAY0;
-    }
-
-    //synchronize among all the blks
-    start_global_barrier(kt+1, &count[0], tidx);
-    if(blockId == 0 && threadId == 0){
-      stay_vol[0] = 0;
-      if(*tail< NUM_SM*MAX_THREADS_PER_BLOCK && *tail > MAX_THREADS_PER_BLOCK){
-        stay_vol[0] = 1;
-        no_of_nodes_vol[0] = *tail;
-        *tail = 0;
-      }
-    }
-    start_global_barrier(kt+2, &count[0], tidx);
-    kt+= 2;
-    if(stay_vol[0] == 0)
-    {
-      if(blockId == 0 && threadId == 0)
-      {
-        *global_kt = kt;
-        *switch_k = (odd_time+1)%2;
-        *no_of_nodes = no_of_nodes_vol[0];
-      }
-      return;
-    }
-  }
+     if(threadId == 0){
+       odd_time = (odd_time+1)%2;
+       if(gray_shade == GRAY0)
+         gray_shade = GRAY1;
+       else
+         gray_shade = GRAY0;
+     }
+ 
+     //synchronize among all the blks
+     start_global_barrier(kt+1, &count[0], tidx);
+     if(blockId == 0 && threadId == 0){
+       stay_vol[0] = 0;
+       if(tail[0]< NUM_SM*MAX_THREADS_PER_BLOCK && tail[0] > MAX_THREADS_PER_BLOCK){
+         stay_vol[0] = 1;
+         no_of_nodes_vol[0] = tail[0];
+         tail[0] = 0;
+       }
+     }
+     start_global_barrier(kt+2, &count[0], tidx);
+     kt+= 2;
+     if(stay_vol[0] == 0)
+     {
+       if(blockId == 0 && threadId == 0)
+       {
+         global_kt[0] = kt;
+         switch_k[0] = (odd_time+1)%2;
+         no_of_nodes[0] = no_of_nodes_vol[0];
+       }
+       return;
+     }
+   }
 }
 
 /*****************************************************************************
@@ -390,15 +412,17 @@ BFS_kernel(tiled_index<1>& tidx,
            array_view<int>& tail,
            int gray_shade,
            int k,
-           array_view<int>& overflow)
+           array_view<int>& overflow) [[hc]]
 {
-  tiled_static LocalQueues local_q;
-  tiled_static int prefix_q[NUM_BIN];//the number of elementss in the w-queues ahead of
+  tile_static LocalQueues local_q;
+  tile_static int prefix_q[NUM_BIN];//the number of elementss in the w-queues ahead of
   //current w-queue, a.k.a prefix sum
-  tiled_static int shift;
+  tile_static int shift;
 
+  int threadId = tidx.local[0];
+  int blockId = tidx.tile[0];
   if(threadId < NUM_BIN){
-    local_q.reset(threadId, blockDim);
+    local_q.reset(threadId, tidx.tile_dim[0]);
   }
   tidx.barrier.wait();
 
@@ -408,7 +432,7 @@ BFS_kernel(tiled_index<1>& tidx,
   {
     // Visit a node from the current frontier; update costs, colors, and
     // output queue
-    visit_node(q1[tid], threadId & MOD_OP, local_q, g_graph_node, g_graph_edges,
+    visit_node(q1[tid], threadId & MOD_OP, local_q, g_graph_nodes, g_graph_edges,
             overflow, g_color, g_cost, gray_shade);
   }
   tidx.barrier.wait();
@@ -419,12 +443,12 @@ BFS_kernel(tiled_index<1>& tidx,
     int tot_sum = local_q.size_prefix_sum(prefix_q);
     //the offset or "shift" of the block-level queue within the
     //grid-level queue is determined by atomic operation
-    shift = atomic_fetch_add(tail,tot_sum);
+    shift = atomic_fetch_add(&tail[0],tot_sum);
   }
   tidx.barrier.wait();
 
   //now copy the elements from w-queues into grid-level queues.
   //Note that we have bypassed the copy to/from block-level queues for efficiency reason
-  local_q.concatenate(q2 + shift, prefix_q);
+  local_q.concatenate(&q2[shift], prefix_q, threadId);
 }
 #endif

@@ -119,9 +119,9 @@ int main(int argc, char** argv)
 
   //Copy the Node list to device memory
   //Copy the Node list to device memory
-  array_view<Node*> d_graph_nodes(num_of_nodes, h_graph_nodes);
+  array_view<Node> d_graph_nodes(num_of_nodes, h_graph_nodes);
   //Copy the Edge List to device Memory
-  array_view<Edge*> d_graph_edges(num_of_edges, h_graph_edges);
+  array_view<Edge> d_graph_edges(num_of_edges, h_graph_edges);
 
   array_view<int> d_color(num_of_nodes, color);
   array_view<int> d_cost(num_of_nodes, h_cost);
@@ -167,7 +167,7 @@ int main(int argc, char** argv)
   stay_vol[0] = 0;
   do
   {
-    num_t[0] = tail;
+    num_t = tail[0];
     tail[0] = zero;
 
     if(num_t == 0){//frontier is empty
@@ -194,17 +194,17 @@ int main(int argc, char** argv)
 
     if(k%2 == 0){
       if(num_of_blocks == 1){
-        parallel_for_each(tile, [=] (tiled_index<1> tidx) [[hc]]
+        parallel_for_each(tile, [&] (tiled_index<1> tidx) [[hc]]
                 {
                     BFS_in_GPU_kernel(tidx, d_q1,d_q2, d_graph_nodes,
                     d_graph_edges, d_color, d_cost,num_t , tail,GRAY0,k,d_overflow);
                 });
       }
       else if(num_of_blocks <= NUM_SM){
-          num_td[0] = num_t
-              parallel_for_each(tile, [=] (tiled_index<1> tidx) [[hc]]
+          num_td[0] = num_t;
+              parallel_for_each(tile, [&] (tiled_index<1> tidx) [[hc]]
                       {
-                      BFS_kernel_multi_blk_inGPU (tile, d_q1,d_q2, d_graph_nodes,
+                      BFS_kernel_multi_blk_inGPU (tidx, d_q1,d_q2, d_graph_nodes,
                           d_graph_edges, d_color, d_cost, num_td, tail,GRAY0,k,
                           switch_kd, max_nodes_per_block_d, global_kt_d,d_overflow,
                           count, no_of_nodes_val, stay_vol);
@@ -215,26 +215,26 @@ int main(int argc, char** argv)
         }
       }
       else{
-          parallel_for_each(tile, [=] (tiled_index<1> tidx) [[hc]]
+          parallel_for_each(tile, [&] (tiled_index<1> tidx) [[hc]]
                   {
-                  BFS_kernel(tile, d_q1,d_q2, d_graph_nodes,
+                  BFS_kernel(tidx, d_q1,d_q2, d_graph_nodes,
                       d_graph_edges, d_color, d_cost, num_t, tail,GRAY0,k,d_overflow);
                   });
       }
     }
     else{
       if(num_of_blocks == 1){
-          parallel_for_each(tile, [=] (tiled_index<1> tidx) [[hc]]
+          parallel_for_each(tile, [&] (tiled_index<1> tidx) [[hc]]
                   {
-                  BFS_in_GPU_kernel(tile, d_q2,d_q1, d_graph_nodes,
+                  BFS_in_GPU_kernel(tidx, d_q2,d_q1, d_graph_nodes,
                       d_graph_edges, d_color, d_cost, num_t, tail,GRAY1,k,d_overflow);
                   });
       }
       else if(num_of_blocks <= NUM_SM){
           num_td[0] = num_t;
-          parallel_for_each(tile, [=] (tiled_index<1> tidx) [[hc]]
+          parallel_for_each(tile, [&] (tiled_index<1> tidx) [[hc]]
                   {
-                  BFS_kernel_multi_blk_inGPU(tile, d_q2,d_q1, d_graph_nodes,
+                  BFS_kernel_multi_blk_inGPU(tidx, d_q2,d_q1, d_graph_nodes,
                       d_graph_edges, d_color, d_cost, num_td, tail,GRAY1,k,
                       switch_kd, max_nodes_per_block_d, global_kt_d,d_overflow,
                       count, no_of_nodes_val, stay_vol);
@@ -245,9 +245,9 @@ int main(int argc, char** argv)
         }
       }
       else{
-          parallel_for_each(tile, [=] (tiled_index<1> tidx) [[hc]]
+          parallel_for_each(tile, [&] (tiled_index<1> tidx) [[hc]]
                   {
-                  BFS_kernel(tile, d_q2,d_q1, d_graph_nodes,
+                  BFS_kernel(tidx, d_q2,d_q1, d_graph_nodes,
                       d_graph_edges, d_color, d_cost, num_t, tail, GRAY1,k,d_overflow);
                   });
       }
@@ -263,8 +263,8 @@ int main(int argc, char** argv)
   printf("GPU kernel done\n");
 
   // copy result from device to host
-  h_cost.synchronize();
-  color.synchronize();
+  d_cost.synchronize();
+  d_color.synchronize();
 
   //Store the result into a file
   pb_SwitchToTimer(&timers, pb_TimerID_IO);

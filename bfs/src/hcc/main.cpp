@@ -158,6 +158,12 @@ int main(int argc, char** argv)
   int h_overflow = 0;
   array_view<int> d_overflow(1);
   d_overflow[0] = h_overflow;
+  array_view<int> count(1);
+  array_view<int> no_of_nodes_val(1);
+  array_view<int> stay_vol(1);
+  count[0] = 0;
+  no_of_nodes_val[0] = 0;
+  stay_vol[0] = 0;
   do
   {
     num_t[0] = tail;
@@ -199,7 +205,8 @@ int main(int argc, char** argv)
                       {
                       BFS_kernel_multi_blk_inGPU (tile, d_q1,d_q2, d_graph_nodes,
                           d_graph_edges, d_color, d_cost, num_td, tail,GRAY0,k,
-                          switch_kd, max_nodes_per_block_d, global_kt_d,d_overflow);
+                          switch_kd, max_nodes_per_block_d, global_kt_d,d_overflow,
+                          count, no_of_nodes_val, stay_vol);
                       });
           switch_k = switch_kd[0];
         if(!switch_k){
@@ -228,7 +235,8 @@ int main(int argc, char** argv)
                   {
                   BFS_kernel_multi_blk_inGPU(tile, d_q2,d_q1, d_graph_nodes,
                       d_graph_edges, d_color, d_cost, num_td, tail,GRAY1,k,
-                      switch_kd, max_nodes_per_block_d, global_kt_d,d_overflow);
+                      switch_kd, max_nodes_per_block_d, global_kt_d,d_overflow,
+                      count, no_of_nodes_val, stay_vol);
                   });
           switch_k = switch_kd[0];
         if(!switch_k){

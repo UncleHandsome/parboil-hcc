@@ -35,8 +35,6 @@ UP_LIMIT are free to visit
 */
 
 #include "config.h"
-texture<Node> g_graph_node_ref;
-texture<Edge> g_graph_edge_ref;
 
 // A group of local queues of node IDs, used by an entire thread block.
 // Multiple queues are used to reduce memory contention.
@@ -55,23 +53,23 @@ struct LocalQueues {
 
   // Initialize or reset the queue at index 'index'.
   // Normally run in parallel for all indices.
-  __device__ void reset(int index, dim3 block_dim) {
+  void reset(int index, int block_dim) [[hc]] {
     tail[index] = 0;		// Queue contains nothing
 
     // Number of sharers is (threads per block / number of queues)
     // If division is not exact, assign the leftover threads to the first
     // few queues.
     sharers[index] =
-      (block_dim.x >> EXP) +
-      (threadIdx.x < (block_dim.x & MOD_OP));
+      (block_dim >> EXP) +
+      (index < (block_dim & MOD_OP));
   }
 
   // Append 'value' to queue number 'index'.  If queue is full, the
   // append operation fails and *overflow is set to 1.
-  __device__ void append(int index, int *overflow, int value) {
+  void append(int index, int *overflow, int value) [[hc]] {
     // Queue may be accessed concurrently, so
     // use an atomic operation to reserve a queue index.
-    int tail_index = atomicAdd(&tail[index], 1);
+    int tail_index = atomic_fetch_add(&tail[index], 1);
     if (tail_index >= W_QUEUE_SIZE)
       *overflow = 1;
     else
@@ -88,7 +86,7 @@ struct LocalQueues {
   // [0, tail[0], tail[0] + tail[1], ...]
   //
   // The total number of elements is returned.
-  __device__ int size_prefix_sum(int (&prefix_q)[NUM_BIN]) {
+  int size_prefix_sum(int (&prefix_q)[NUM_BIN]) [[hc]] {
     prefix_q[0] = 0;
     for(int i = 1; i < NUM_BIN; i++){
       prefix_q[i] = prefix_q[i-1] + tail[i-1];
@@ -100,10 +98,10 @@ struct LocalQueues {
   // This function should be executed by all threads in a thread block.
   //
   // prefix_q should contain the result of 'size_prefix_sum'.
-  __device__ void concatenate(int *dst, int (&prefix_q)[NUM_BIN]) {
+  void concatenate(int *dst, int (&prefix_q)[NUM_BIN], int threadId) [[hc]] {
     // Thread n processes elems[n % NUM_BIN][n / NUM_BIN, ...]
-    int q_i = threadIdx.x & MOD_OP; // w-queue index
-    int local_shift = threadIdx.x >> EXP; // shift within a w-queue
+    int q_i = threadId & MOD_OP; // w-queue index
+    int local_shift = threadId >> EXP; // shift within a w-queue
 
     while(local_shift < tail[q_i]){
       dst[prefix_q[q_i] + local_shift] = elems[q_i][local_shift];
@@ -115,22 +113,18 @@ struct LocalQueues {
   }
 };
 
-volatile __device__ int count = 0;
-volatile __device__ int no_of_nodes_vol = 0;
-volatile __device__ int stay_vol = 0;
-
 //Inter-block sychronization
 //This only works when there is only one block per SM
-__device__ void start_global_barrier(int fold){
-  __syncthreads();
+void start_global_barrier(int fold, int* count, tiled_index<1>& tidx) [[hc]] {
+  tidx.barrier.wait();
 
-  if(threadIdx.x == 0){
-    atomicAdd((int*)&count, 1);
-    while( count < NUM_SM*fold){
+  if(tidx.tile[0] == 0){
+    atomic_fetch_aa(count, 1);
+    while( *count < NUM_SM*fold){
       ;
     }
   }
-  __syncthreads();
+  tidx.barrier.wait();
 
 }
 
@@ -141,31 +135,33 @@ __device__ void start_global_barrier(int fold){
 // 'index' is the local queue to use, chosen based on the thread ID.
 // The output goes in 'local_q' and 'overflow'.
 // Other parameters are inputs.
-__device__ void
+void
 visit_node(int pid,
 	   int index,
 	   LocalQueues &local_q,
-	   int *overflow,
-	   int *g_color,
-	   int *g_cost,
-	   int gray_shade)
+       array_view<Node>& g_graph_node_ref,
+       array_view<Node>& g_graph_edge_ref,
+	   array_view<int>& overflow,
+	   array_view<int>& g_color,
+	   array_view<int>& g_cost,
+	   int gray_shade) [[hc]]
 {
   g_color[pid] = BLACK;		// Mark this node as visited
   int cur_cost = g_cost[pid];	// Look up shortest-path distance to this node
-  Node cur_node = tex1Dfetch(g_graph_node_ref,pid);
+  Node cur_node = g_graph_node_ref[pid];
 
   // For each outgoing edge
   for(int i = cur_node.x; i < cur_node.y + cur_node.x; i++) {
-    Edge cur_edge = tex1Dfetch(g_graph_edge_ref,i);
+    Edge cur_edge = g_graph_edge_ref[i];
     int id = cur_edge.x;
     int cost = cur_edge.y;
     cost += cur_cost;
-    int orig_cost = atomicMin(&g_cost[id],cost);
+    int orig_cost = atomic_fetch_min(&g_cost[id],cost);
 
     // If this outgoing edge makes a shorter path than any previously
     // discovered path
     if(orig_cost > cost){
-      int old_color = atomicExch(&g_color[id],gray_shade);
+      int old_color = atomic_fetch_exchange(&g_color[id],gray_shade);
       if(old_color != gray_shade) {
 	//push to the queue
 	local_q.append(index, overflow, id);
@@ -183,33 +179,35 @@ visit_node(int pid,
 //\param q1: the current frontier queue when the kernel is launched
 //\param q2: the new frontier queue when the  kernel returns
 //--------------------------------------------------
-__global__ void
-BFS_in_GPU_kernel(int *q1,
-                  int *q2,
-                  Node *g_graph_nodes,
-                  Edge *g_graph_edges,
-                  int *g_color,
-                  int *g_cost,
+void
+BFS_in_GPU_kernel(tiled_index<1>& tidx,
+                  array_view<int>& q1,
+                  array_view<int>& q2,
+                  array_view<Node>& g_graph_nodes,
+                  array_view<Edge>& g_graph_edges,
+                  array_view<int>& g_color,
+                  array_view<int>& g_cost,
                   int no_of_nodes,
-                  int *tail,
+                  array_view<int>& tail,
                   int gray_shade,
                   int k,
-                  int *overflow)
+                  array_view<int>& overflow)
 {
-  __shared__ LocalQueues local_q;
-  __shared__ int prefix_q[NUM_BIN];
+  tiled_static LocalQueues local_q;
+  tiled_static int prefix_q[NUM_BIN];
 
   //next/new wave front
-  __shared__ int next_wf[MAX_THREADS_PER_BLOCK];
-  __shared__ int  tot_sum;
-  if(threadIdx.x == 0)	
+  tiled_static int next_wf[MAX_THREADS_PER_BLOCK];
+  tiled_static int  tot_sum;
+  int threadId = tidx.local[0];
+  if(threadId == 0)	
     tot_sum = 0;//total number of new frontier nodes
   while(1){//propage through multiple BFS levels until the wavfront overgrows one-block limit
-    if(threadIdx.x < NUM_BIN){
-      local_q.reset(threadIdx.x, blockDim);
+    if(threadId < NUM_BIN){
+      local_q.reset(threadId, tidx.local_dim[0]);
     }
-    __syncthreads();
-    int tid = blockIdx.x*MAX_THREADS_PER_BLOCK + threadIdx.x;
+    tidx.barrier.wait();
+    int tid = blockId*MAX_THREADS_PER_BLOCK + threadId;
     if( tid<no_of_nodes)
     {
       int pid;
@@ -220,14 +218,14 @@ BFS_in_GPU_kernel(int *q1,
 
       // Visit a node from the current frontier; update costs, colors, and
       // output queue
-      visit_node(pid, threadIdx.x & MOD_OP, local_q, overflow,
-		 g_color, g_cost, gray_shade);
+      visit_node(pid, threadId & MOD_OP, local_q, g_graph_nodes, g_graph_edges,
+              overflow, g_color, g_cost, gray_shade);
     }
-    __syncthreads();
-    if(threadIdx.x == 0){
+    tidx.barrier.wait();
+    if(threadId == 0){
       *tail = tot_sum = local_q.size_prefix_sum(prefix_q);
     }
-    __syncthreads();
+    tidx.barrier.wait();
 
     if(tot_sum == 0)//the new frontier becomes empty; BFS is over
       return;
@@ -235,9 +233,9 @@ BFS_in_GPU_kernel(int *q1,
       //the new frontier is still within one-block limit;
       //stay in current kernel
       local_q.concatenate(next_wf, prefix_q);
-      __syncthreads();
+      tidx.barrier.wait();
       no_of_nodes = tot_sum;
-      if(threadIdx.x == 0){
+      if(threadId == 0){
         if(gray_shade == GRAY0)
           gray_shade = GRAY1;
         else
@@ -268,42 +266,48 @@ BFS_in_GPU_kernel(int *q1,
 //\param global_kt: the total number of global synchronizations,
 //                   or the number of times to call "start_global_barrier"
 //--------------------------------------------------------------
-__global__ void
-BFS_kernel_multi_blk_inGPU(int *q1,
-                           int *q2,
-                           Node *g_graph_nodes,
-                           Edge *g_graph_edges,
-                           int *g_color,
-                           int *g_cost,
-                           int *no_of_nodes,
-                           int *tail,
+void
+BFS_kernel_multi_blk_inGPU(tiled_index<1>& tidx,
+                           array_view<int>& q1,
+                           array_view<int>& q2,
+                           array_view<Node>& g_graph_nodes,
+                           array_view<Edge>& g_graph_edges,
+                           array_view<int>& g_color,
+                           array_view<int>& g_cost,
+                           array_view<int>& no_of_nodes,
+                           array_view<int>& tail,
                            int gray_shade,
                            int k,
-                           int *switch_k,
-                           int *max_nodes_per_block,
-                           int *global_kt,
-                           int *overflow)
+                           array_view<int>& switch_k,
+                           array_view<int>& max_nodes_per_block,
+                           array_view<int>& global_kt,
+                           array_view<int>& overflow
+                           array_view<int>& count,
+                           array_view<int>& no_of_nodes_vol,
+                           array_view<int>& stay_vol)
 {
-  __shared__ LocalQueues local_q;
-  __shared__ int prefix_q[NUM_BIN];
-  __shared__ int shift;
-  __shared__ int no_of_nodes_sm;
-  __shared__ int odd_time;// the odd level of propagation within current kernel
-  if(threadIdx.x == 0){
+  tiled_static LocalQueues local_q;
+  tiled_static int prefix_q[NUM_BIN];
+  tiled_static int shift;
+  tiled_static int no_of_nodes_sm;
+  tiled_static int odd_time;// the odd level of propagation within current kernel
+  int threadId = tidx.local[0];
+  int blockId = tidx.tile[0];
+  if(threadId == 0){
     odd_time = 1;//true;
-    if(blockIdx.x == 0)
-      no_of_nodes_vol = *no_of_nodes;
+    if(blockId == 0)
+      no_of_nodes_vol[0] = *no_of_nodes;
   }
-  int kt = atomicOr(global_kt,0);// the total count of GPU global synchronization
+  int kt = atomic_fetch_or(global_kt,0);// the total count of GPU global synchronization
   while (1){//propagate through multiple levels
-    if(threadIdx.x < NUM_BIN){
-      local_q.reset(threadIdx.x, blockDim);
+    if(threadId < NUM_BIN){
+      local_q.reset(threadId, tidx.tile_dim[0]);
     }
-    if(threadIdx.x == 0)
-      no_of_nodes_sm = no_of_nodes_vol;
-    __syncthreads();
+    if(threadId == 0)
+      no_of_nodes_sm = no_of_nodes_vol[0];
+    tidx.barrier.wait();
 
-    int tid = blockIdx.x*MAX_THREADS_PER_BLOCK + threadIdx.x;
+    int tid = blockId*MAX_THREADS_PER_BLOCK + threadId;
     if( tid<no_of_nodes_sm)
     {
       // Read a node ID from the current input queue
@@ -312,23 +316,23 @@ BFS_kernel_multi_blk_inGPU(int *q1,
 
       // Visit a node from the current frontier; update costs, colors, and
       // output queue
-      visit_node(pid, threadIdx.x & MOD_OP, local_q, overflow,
-		 g_color, g_cost, gray_shade);
+      visit_node(pid, threadId & MOD_OP, local_q, g_graph_nodes, g_graph_edges,
+              overflow, g_color, g_cost, gray_shade);
     }
-    __syncthreads();
+    tidx.barrier.wait();
 
     // Compute size of the output and allocate space in the global queue
-    if(threadIdx.x == 0){
+    if(threadId == 0){
       int tot_sum = local_q.size_prefix_sum(prefix_q);
-      shift = atomicAdd(tail, tot_sum);
+      shift = atomic_fetch_add(tail, tot_sum);
     }
-    __syncthreads();
+    tidx.barrier.wait();
 
     // Copy to the current output queue in global memory
     int *output_queue = odd_time ? q2 : q1;
     local_q.concatenate(output_queue + shift, prefix_q);
 
-    if(threadIdx.x == 0){
+    if(threadId == 0){
       odd_time = (odd_time+1)%2;
       if(gray_shade == GRAY0)
         gray_shade = GRAY1;
@@ -337,24 +341,24 @@ BFS_kernel_multi_blk_inGPU(int *q1,
     }
 
     //synchronize among all the blks
-    start_global_barrier(kt+1);
-    if(blockIdx.x == 0 && threadIdx.x == 0){
-      stay_vol = 0;
+    start_global_barrier(kt+1, &count[0], tidx);
+    if(blockId == 0 && threadId == 0){
+      stay_vol[0] = 0;
       if(*tail< NUM_SM*MAX_THREADS_PER_BLOCK && *tail > MAX_THREADS_PER_BLOCK){
-        stay_vol = 1;
-        no_of_nodes_vol = *tail;
+        stay_vol[0] = 1;
+        no_of_nodes_vol[0] = *tail;
         *tail = 0;
       }
     }
-    start_global_barrier(kt+2);
+    start_global_barrier(kt+2, &count[0], tidx);
     kt+= 2;
-    if(stay_vol == 0)
+    if(stay_vol[0] == 0)
     {
-      if(blockIdx.x == 0 && threadIdx.x == 0)
+      if(blockId == 0 && threadId == 0)
       {
         *global_kt = kt;
         *switch_k = (odd_time+1)%2;
-        *no_of_nodes = no_of_nodes_vol;
+        *no_of_nodes = no_of_nodes_vol[0];
       }
       return;
     }
@@ -374,49 +378,50 @@ BFS_kernel_multi_blk_inGPU(int *q1,
   \param gray_shade: the shade of the gray in current BFS propagation. See GRAY0, GRAY1 macro definitions for more details
   \param k: the level of current propagation in the BFS tree. k= 0 for the first propagation.
  ***********************************************************************/
-__global__ void
-BFS_kernel(int *q1,
-           int *q2,
-           Node *g_graph_nodes,
-           Edge *g_graph_edges,
-           int *g_color,
-           int *g_cost,
+void
+BFS_kernel(tiled_index<1>& tidx,
+           array_view<int>& q1,
+           array_view<int>& q2,
+           array_view<Node>& g_graph_nodes,
+           array_view<Edge>& g_graph_edges,
+           array_view<int>& g_color,
+           array_view<int>& g_cost,
            int no_of_nodes,
-           int *tail,
+           array_view<int>& tail,
            int gray_shade,
            int k,
-           int *overflow)
+           array_view<int>& overflow)
 {
-  __shared__ LocalQueues local_q;
-  __shared__ int prefix_q[NUM_BIN];//the number of elementss in the w-queues ahead of
+  tiled_static LocalQueues local_q;
+  tiled_static int prefix_q[NUM_BIN];//the number of elementss in the w-queues ahead of
   //current w-queue, a.k.a prefix sum
-  __shared__ int shift;
+  tiled_static int shift;
 
-  if(threadIdx.x < NUM_BIN){
-    local_q.reset(threadIdx.x, blockDim);
+  if(threadId < NUM_BIN){
+    local_q.reset(threadId, blockDim);
   }
-  __syncthreads();
+  tidx.barrier.wait();
 
   //first, propagate and add the new frontier elements into w-queues
-  int tid = blockIdx.x*MAX_THREADS_PER_BLOCK + threadIdx.x;
+  int tid = blockId*MAX_THREADS_PER_BLOCK + threadId;
   if( tid < no_of_nodes)
   {
     // Visit a node from the current frontier; update costs, colors, and
     // output queue
-    visit_node(q1[tid], threadIdx.x & MOD_OP, local_q, overflow,
-	       g_color, g_cost, gray_shade);
+    visit_node(q1[tid], threadId & MOD_OP, local_q, g_graph_node, g_graph_edges,
+            overflow, g_color, g_cost, gray_shade);
   }
-  __syncthreads();
+  tidx.barrier.wait();
 
   // Compute size of the output and allocate space in the global queue
-  if(threadIdx.x == 0){
+  if(threadId == 0){
     //now calculate the prefix sum
     int tot_sum = local_q.size_prefix_sum(prefix_q);
     //the offset or "shift" of the block-level queue within the
     //grid-level queue is determined by atomic operation
-    shift = atomicAdd(tail,tot_sum);
+    shift = atomic_fetch_add(tail,tot_sum);
   }
-  __syncthreads();
+  tidx.barrier.wait();
 
   //now copy the elements from w-queues into grid-level queues.
   //Note that we have bypassed the copy to/from block-level queues for efficiency reason

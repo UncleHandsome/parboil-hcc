@@ -112,8 +112,8 @@ int main(int argc, char** argv)
   pb_SwitchToTimer(&timers, pb_TimerID_COPY);
 
   //Copy the Node list to device memory
-  array_view<Node> d_graph_nodes(num_of_nodes, h_graph_nodes);
-  array_view<Edge> d_graph_edges(num_of_edges, h_graph_edges);
+  array_view<const Node> d_graph_nodes(num_of_nodes, h_graph_nodes);
+  array_view<const Edge> d_graph_edges(num_of_edges, h_graph_edges);
 
   array_view<int> d_color(num_of_nodes, color);
   array_view<int> d_cost(num_of_nodes, h_cost);
@@ -162,17 +162,17 @@ int main(int argc, char** argv)
     tiled_extent<1>  tile = grid.tile(num_of_threads_per_block);
 
     if(k%2 == 0){
-        parallel_for_each(tile, [&] (tiled_index<1> tidx) [[hc]]
+        parallel_for_each(tile, [=] (tiled_index<1> tidx) [[hc]]
                 {
                 BFS_kernel(tidx, d_q1,d_q2, d_graph_nodes,
                     d_graph_edges, d_color, d_cost, num_t, tail,GRAY0,k);
                 });
     }
     else{
-        parallel_for_each(tile, [&] (tiled_index<1> tidx) [[hc]]
+        parallel_for_each(tile, [=] (tiled_index<1> tidx) [[hc]]
                 {
-                BFS_kernel(tidx, d_q1,d_q2, d_graph_nodes,
-                    d_graph_edges, d_color, d_cost, num_t, tail,GRAY0,k);
+                BFS_kernel(tidx, d_q2,d_q1, d_graph_nodes,
+                    d_graph_edges, d_color, d_cost, num_t, tail,GRAY1,k);
                 });
     }
     k++;

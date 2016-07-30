@@ -51,14 +51,14 @@ This is the  most general version of BFS kernel, i.e. no assumption about #block
 ***********************************************************************/
 void
 BFS_kernel(tiled_index<1>& tidx,
-           array_view<int>& q1,
-           array_view<int>& q2,
-           array_view<Node>& g_graph_nodes,
-           array_view<Edge>& g_graph_edges,
-           array_view<int>& g_color,
-           array_view<int>& g_cost,
+           const array_view<int>& q1,
+           const array_view<int>& q2,
+           const array_view<const Node>& g_graph_nodes,
+           const array_view<const Edge>& g_graph_edges,
+           const array_view<int>& g_color,
+           const array_view<int>& g_cost,
            int no_of_nodes,
-           array_view<int>& tail,
+           const array_view<int>& tail,
            int gray_shade,
            int k) [[hc]]
 {

@@ -242,21 +242,23 @@ BFS_in_GPU_kernel(tiled_index<1>& tidx,
 
     if(tot_sum == 0)//the new frontier becomes empty; BFS is over
       return;
-    if (tot_sum > MAX_THREADS_PER_BLOCK) {
-        local_q.concatenate(q2, prefix_q, threadId);
-        return;
-    }
-    //the new frontier is still within one-block limit;
-    //stay in current kernel
-    local_q.concatenate(next_wf, prefix_q, threadId);
-
-    no_of_nodes = tot_sum;
-    tidx.barrier.wait();
-    if(threadId == 0){
+    if(tot_sum <= MAX_THREADS_PER_BLOCK){
+      //the new frontier is still within one-block limit;
+      //stay in current kernel
+      local_q.concatenate(next_wf, prefix_q, threadId);
+      tidx.barrier.wait();
+      no_of_nodes = tot_sum;
+      if(threadId == 0){
         if(gray_shade == GRAY0)
-            gray_shade = GRAY1;
+          gray_shade = GRAY1;
         else
-            gray_shade = GRAY0;
+          gray_shade = GRAY0;
+      }
+    }
+    else{
+      //the new frontier outgrows one-block limit; terminate current kernel
+      local_q.concatenate(q2, prefix_q, threadId);
+      return;
     }
   }//while
 

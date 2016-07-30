@@ -272,7 +272,7 @@ extern "C" int gpu_compute_cutoff_potential_lattice(
   lnz = 8 * zRegionDim;
   lnall = lnx * lny * lnz;
 
-  /* will receive energies from CUDA */
+  /* will receive energies from HCC */
   regionZeroAddr = (float *) malloc(lnall * sizeof(float));
 
   /* create bins */
@@ -484,43 +484,42 @@ extern "C" int gpu_compute_cutoff_potential_lattice(
   g.z = 1 * b.z;
   tiled_extent<3> text = extent<3>(g.z, g.y, g.x).tile(b.z, b.y, b.x);
 
-  /* allocate and initialize memory on CUDA device */
+  /* allocate and initialize memory on HCC device */
   pb_SwitchToTimer(timers, pb_TimerID_COPY);
   if (verbose) {
     printf("Allocating %.2fMB on HCC device for potentials\n",
            lnall * sizeof(float) / (double) (1024*1024));
   }
-  array_view<float> regionZeroCuda(lnall);
+  std::vector<float> l(lnall);
+  array_view<float> regionZeroHcc(lnall, l);
   if (verbose) {
     printf("Allocating %.2fMB on HCC device for atom bins\n",
            nbins * BIN_DEPTH * sizeof(float4) / (double) (1024*1024));
   }
-  array_view<float4> binBaseCuda(nbins * BIN_DEPTH, binBaseAddr);
-  hc::index<1> idx(((c * binDim.y + c) * binDim.x + c) * BIN_DEPTH);
-  array_view<float4> binZeroCuda
-      = binBaseCuda.section(idx);
+  int len = ((c * binDim.y + c) * binDim.x + c) * BIN_DEPTH;
+  array_view<float4> binZeroHcc(nbins * BIN_DEPTH - len, binBaseAddr+len);
   array_view<const int3> NbrList(nbrlistlen, nbrlist);
 
   if (verbose)
     printf("\n");
 
-  /* loop over z-dimension, invoke CUDA kernel for each x-y plane */
+  /* loop over z-dimension, invoke HCC kernel for each x-y plane */
   pb_SwitchToTimer(timers, pb_TimerID_KERNEL);
   printf("Invoking HCC kernel on %d region planes...\n", zRegionDim);
   for (zRegionIndex = 0;  zRegionIndex < zRegionDim;  zRegionIndex++) {
     printf("  computing plane %d\r", zRegionIndex);
     fflush(stdout);
     parallel_for_each(text, [=] (tiled_index<3> tidx) [[hc]] {
-            hcc_cutoff_potential_lattice(tidx, binDim.x, binDim.y, binZeroCuda, h,
-                cutoff2, inv_cutoff2, regionZeroCuda, zRegionIndex, NbrList);
+            hcc_cutoff_potential_lattice(tidx, binDim.x, binDim.y, binZeroHcc, h,
+                cutoff2, inv_cutoff2, regionZeroHcc, zRegionIndex, NbrList);
             }
-            );
+            ).wait();
   }
-  printf("Finished CUDA kernel calls                        \n");
+  printf("Finished HCC kernel calls                        \n");
 
-  /* copy result regions from CUDA device */
+  /* copy result regions from HCC device */
   pb_SwitchToTimer(timers, pb_TimerID_COPY);
-  regionZeroCuda.synchronize();
+  regionZeroHcc.synchronize();
 
   /* transpose regions back into lattice */
   pb_SwitchToTimer(timers, pb_TimerID_COMPUTE);

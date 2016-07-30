@@ -200,7 +200,7 @@ int main(int argc, char *argv[]) {
    *  Run CUDA kernel
    *  (enter and exit with the 'compute' timer active)
    */
-  if (gpu_compute_cutoff_potential_lattice(&timers, gpu_lattice, cutoff, atom, 0)) {
+  if (gpu_compute_cutoff_potential_lattice(&timers, gpu_lattice, cutoff, atom, 1)) {
     fprintf(stderr, "Computation failed\n");
     exit(1);
   }

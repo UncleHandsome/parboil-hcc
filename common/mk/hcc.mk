@@ -69,7 +69,8 @@ clean :
 #$(BIN) : $(OBJS) $(BUILDDIR)/parboil.o
 #	$(HCC_BIN) $^ -o $@ $(LDFLAGS)
 
-$(BIN) : $(SRCDIR)/main.cpp $(BUILDDIR)/parboil.o
+CPP_FILES := $(wildcard $(SRCDIR)/*.cpp)
+$(BIN) : $(CPP_FILES) $(BUILDDIR)/parboil.o
 	$(HCC_BIN) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
 $(BUILDDIR) :

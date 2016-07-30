@@ -10,9 +10,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <hc.hpp>
+#include <hc_math.hpp>
 #include "atom.h"
 #include "cutoff.h"
 #include "parboil.h"
+
+using namespace hc;
 
 #ifdef __DEVICE_EMULATION__
 #define DEBUG
@@ -23,8 +27,8 @@
 #define TY  0
 #define TZ  0
 #define EMU(code) do { \
-  if (blockIdx.x==BX && blockIdx.y==BY && \
-      threadIdx.x==TX && threadIdx.y==TY && threadIdx.z==TZ) { \
+  if (bx==BX && by==BY && \
+      tx==TX && ty==TY && tz==TZ) { \
     code; \
   } \
 } while (0)
@@ -41,15 +45,9 @@
 #define FLOAT4(f)
 #endif
 
-/* report error from CUDA */
-#define CUERR \
-  do { \
-    cudaError_t err; \
-    if ((err = cudaGetLastError()) != cudaSuccess) { \
-      printf("CUDA error: %s, line %d\n", cudaGetErrorString(err), __LINE__); \
-      return -1; \
-    } \
-  } while (0)
+typedef struct _int3 { int x, y, z; } int3;
+typedef struct _float4 { float x, y, z, w; } float4;
+
 
 /*
  * neighbor list:
@@ -61,8 +59,6 @@
  */
 #define NBRLIST_DIM  11
 #define NBRLIST_MAXLEN (NBRLIST_DIM * NBRLIST_DIM * NBRLIST_DIM)
-__constant__ int NbrListLen;
-__constant__ int3 NbrList[NBRLIST_MAXLEN];
 
 /*
  * atom bins cached into shared memory for processing
@@ -88,7 +84,7 @@ __constant__ int3 NbrList[NBRLIST_MAXLEN];
  * THIS IMPLEMENTATION:  one thread per lattice point
  * thread block size 128 gives 4 thread blocks per region
  * kernel is invoked for each x-y plane of regions,
- * where gridDim.x is 4*(x region dimension) so that blockIdx.x
+ * where gx is 4*(x region dimension) so that bx
  * can absorb the z sub-region index in its 2 lowest order bits
  *
  * Regions are stored contiguously in memory in row-major order
@@ -104,46 +100,46 @@ __constant__ int3 NbrList[NBRLIST_MAXLEN];
  * regionZeroAddr and binZeroAddr.  The atom coordinates are translated
  * during binning to enforce this assumption.
  */
-__global__ static void cuda_cutoff_potential_lattice(
+static void hcc_cutoff_potential_lattice(
+    tiled_index<3> tidx,
     int binDim_x,
     int binDim_y,
-    float4 *binZeroAddr,    /* address of atom bins starting at origin */
+    const array_view<float4>& binZeroAddr,    /* address of atom bins starting at origin */
     float h,                /* lattice spacing */
     float cutoff2,          /* square of cutoff distance */
     float inv_cutoff2,
-    float *regionZeroAddr,  /* address of lattice regions starting at origin */
-    int zRegionIndex
-    )
+    const array_view<float>& regionZeroAddr,/* address of lattice regions starting at origin */
+    int zRegionIndex,
+    const array_view<const int3>& NbrList
+    ) [[hc]]
 {
-  __shared__ float AtomBinCache[BIN_CACHE_MAXLEN * BIN_DEPTH * 4];
-  __shared__ float *mySubRegionAddr;
-  __shared__ int3 myBinIndex;
+  tile_static float AtomBinCache[BIN_CACHE_MAXLEN * BIN_DEPTH * 4];
+  tile_static int3 myBinIndex;
 
-  //const int xRegionIndex = (blockIdx.x >> 2);
-  //const int yRegionIndex = blockIdx.y;
+  int tz = tidx.local[0], ty = tidx.local[1], tx = tidx.local[2];
+  int bz = tidx.tile[0], by = tidx.tile[1], bx = tidx.tile[2];
+  int gz = tidx.tile_dim[0], gy = tidx.tile_dim[1], gx = tidx.tile_dim[2];
+
+  //const int xRegionIndex = (bx >> 2);
+  //const int yRegionIndex = by;
 
   /* thread id */
-  const int tid = (threadIdx.z*8 + threadIdx.y)*8 + threadIdx.x;
+  const int tid = (tz*8 + ty)*8 + tx;
 
   /* neighbor index */
   int nbrid;
 
-  /* this is the start of the sub-region indexed by tid */
-  mySubRegionAddr = regionZeroAddr + ((zRegionIndex*gridDim.y
-        + blockIdx.y)*(gridDim.x>>2) + (blockIdx.x >> 2))*REGION_SIZE
-        + (blockIdx.x&3)*SUB_REGION_SIZE;
-
   /* spatial coordinate of this lattice point */
-  float x = (8 * (blockIdx.x >> 2) + threadIdx.x) * h;
-  float y = (8 * blockIdx.y + threadIdx.y) * h;
-  float z = (8 * zRegionIndex + 2*(blockIdx.x&3) + threadIdx.z) * h;
+  float x = (8 * (bx >> 2) + tx) * h;
+  float y = (8 * by + ty) * h;
+  float z = (8 * zRegionIndex + 2*(bx&3) + tz) * h;
 
   int totalbins = 0;
   int numbins;
 
   /* bin number determined by center of region */
-  myBinIndex.x = (int) floorf((8 * (blockIdx.x >> 2) + 4) * h * BIN_INVLEN);
-  myBinIndex.y = (int) floorf((8 * blockIdx.y + 4) * h * BIN_INVLEN);
+  myBinIndex.x = (int) floorf((8 * (bx >> 2) + 4) * h * BIN_INVLEN);
+  myBinIndex.y = (int) floorf((8 * by + 4) * h * BIN_INVLEN);
   myBinIndex.z = (int) floorf((8 * zRegionIndex + 4) * h * BIN_INVLEN);
 
   /* first neighbor in list for me to cache */
@@ -152,6 +148,7 @@ __global__ static void cuda_cutoff_potential_lattice(
   numbins = BIN_CACHE_MAXLEN;
 
   float energy = 0.f;
+  int NbrListLen = NbrList.get_extent()[0];
   for (totalbins = 0;  totalbins < NbrListLen;  totalbins += numbins) {
     int bincnt;
 
@@ -165,8 +162,8 @@ __global__ static void cuda_cutoff_potential_lattice(
       int k = myBinIndex.z + NbrList[nbrid].z;
 
       /* determine global memory location of atom bin */
-      float *p_global = ((float *) binZeroAddr)
-        + (((k*binDim_y) + j)*binDim_x + i) * BIN_SIZE;
+      array_view<float> p_global =
+          binZeroAddr.reinterpret_as<float>().section(index<1>((((k*binDim_y) + j)*binDim_x + i) * BIN_SIZE));
 
       /* coalesced read from global memory -
        * retain same ordering in shared memory for now */
@@ -176,7 +173,7 @@ __global__ static void cuda_cutoff_potential_lattice(
       AtomBinCache[binIndex + tidmask   ] = p_global[tidmask   ];
       AtomBinCache[binIndex + tidmask+16] = p_global[tidmask+16];
     }
-    __syncthreads();
+    tidx.barrier.wait();
 
     /* no warp divergence */
     if (totalbins + BIN_CACHE_MAXLEN > NbrListLen) {
@@ -200,12 +197,16 @@ __global__ static void cuda_cutoff_potential_lattice(
         }
       } /* end loop over atoms in bin */
     } /* end loop over cached atom bins */
-    __syncthreads();
+    tidx.barrier.wait();
 
   } /* end loop over neighbor list */
 
   /* store into global memory */
-  mySubRegionAddr[tid] = energy;
+  /* this is the start of the sub-region indexed by tid */
+  int mySubRegionAddr = ((zRegionIndex*gy
+        + by)*(gx>>2) + (bx >> 2))*REGION_SIZE
+        + (bx&3)*SUB_REGION_SIZE;
+  regionZeroAddr[mySubRegionAddr + tid] = energy;
 }
 
 
@@ -241,14 +242,12 @@ extern "C" int gpu_compute_cutoff_potential_lattice(
   int xOffset, yOffset, zOffset;
   int lnx, lny, lnz, lnall;
   float *regionZeroAddr, *thisRegion;
-  float *regionZeroCuda;
   int index, indexRegion;
 
   int c;
   int3 binDim;
   int nbins;
   float4 *binBaseAddr, *binZeroAddr;
-  float4 *binBaseCuda, *binZeroCuda;
   int *bincntBaseAddr, *bincntZeroAddr;
   Atoms *extra = NULL;
 
@@ -259,7 +258,7 @@ extern "C" int gpu_compute_cutoff_potential_lattice(
   const float cutoff2 = cutoff * cutoff;
   const float inv_cutoff2 = 1.f / cutoff2;
 
-  dim3 gridDim, blockDim;
+  int3 g, b;
 
   // Caller has made the 'compute' timer active
 
@@ -477,63 +476,51 @@ extern "C" int gpu_compute_cutoff_potential_lattice(
     printf("\n");
   }
 
-  /* setup CUDA kernel parameters */
-  gridDim.x = 4 * xRegionDim;
-  gridDim.y = yRegionDim;
-  gridDim.z = 1;
-  blockDim.x = 8;
-  blockDim.y = 8;
-  blockDim.z = 2;
+  b.x = 8;
+  b.y = 8;
+  b.z = 2;
+  g.x = 4 * xRegionDim * b.x;
+  g.y = yRegionDim * b.y;
+  g.z = 1 * b.z;
+  tiled_extent<3> text = extent<3>(g.z, g.y, g.x).tile(b.z, b.y, b.x);
 
   /* allocate and initialize memory on CUDA device */
   pb_SwitchToTimer(timers, pb_TimerID_COPY);
   if (verbose) {
-    printf("Allocating %.2fMB on CUDA device for potentials\n",
+    printf("Allocating %.2fMB on HCC device for potentials\n",
            lnall * sizeof(float) / (double) (1024*1024));
   }
-  cudaMalloc((void **) &regionZeroCuda, lnall * sizeof(float));
-  CUERR;
-  cudaMemset(regionZeroCuda, 0, lnall * sizeof(float));
-  CUERR;
+  array_view<float> regionZeroCuda(lnall);
   if (verbose) {
-    printf("Allocating %.2fMB on CUDA device for atom bins\n",
+    printf("Allocating %.2fMB on HCC device for atom bins\n",
            nbins * BIN_DEPTH * sizeof(float4) / (double) (1024*1024));
   }
-  cudaMalloc((void **) &binBaseCuda, nbins * BIN_DEPTH * sizeof(float4));
-  CUERR;
-  cudaMemcpy(binBaseCuda, binBaseAddr, nbins * BIN_DEPTH * sizeof(float4),
-      cudaMemcpyHostToDevice);
-  CUERR;
-  binZeroCuda = binBaseCuda + ((c * binDim.y + c) * binDim.x + c) * BIN_DEPTH;
-  cudaMemcpyToSymbol(NbrListLen, &nbrlistlen, sizeof(int), 0);
-  CUERR;
-  cudaMemcpyToSymbol(NbrList, nbrlist, nbrlistlen * sizeof(int3), 0);
-  CUERR;
+  array_view<float4> binBaseCuda(nbins * BIN_DEPTH, binBaseAddr);
+  hc::index<1> idx(((c * binDim.y + c) * binDim.x + c) * BIN_DEPTH);
+  array_view<float4> binZeroCuda
+      = binBaseCuda.section(idx);
+  array_view<const int3> NbrList(nbrlistlen, nbrlist);
 
   if (verbose)
     printf("\n");
 
   /* loop over z-dimension, invoke CUDA kernel for each x-y plane */
   pb_SwitchToTimer(timers, pb_TimerID_KERNEL);
-  printf("Invoking CUDA kernel on %d region planes...\n", zRegionDim);
+  printf("Invoking HCC kernel on %d region planes...\n", zRegionDim);
   for (zRegionIndex = 0;  zRegionIndex < zRegionDim;  zRegionIndex++) {
     printf("  computing plane %d\r", zRegionIndex);
     fflush(stdout);
-    cuda_cutoff_potential_lattice<<<gridDim, blockDim, 0>>>(binDim.x, binDim.y,
-        binZeroCuda, h, cutoff2, inv_cutoff2, regionZeroCuda, zRegionIndex);
-    CUERR;
+    parallel_for_each(text, [=] (tiled_index<3> tidx) [[hc]] {
+            hcc_cutoff_potential_lattice(tidx, binDim.x, binDim.y, binZeroCuda, h,
+                cutoff2, inv_cutoff2, regionZeroCuda, zRegionIndex, NbrList);
+            }
+            );
   }
   printf("Finished CUDA kernel calls                        \n");
 
   /* copy result regions from CUDA device */
   pb_SwitchToTimer(timers, pb_TimerID_COPY);
-  cudaMemcpy(regionZeroAddr, regionZeroCuda, lnall * sizeof(float),
-      cudaMemcpyDeviceToHost);
-  CUERR;
-
-  /* free CUDA memory allocations */
-  cudaFree(regionZeroCuda);
-  cudaFree(binBaseCuda);
+  regionZeroCuda.synchronize();
 
   /* transpose regions back into lattice */
   pb_SwitchToTimer(timers, pb_TimerID_COMPUTE);

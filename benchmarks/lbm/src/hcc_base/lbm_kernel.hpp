@@ -13,16 +13,17 @@
 
 /******************************************************************************/
 
-__global__ void performStreamCollide_kernel( float* srcGrid, float* dstGrid )
+void performStreamCollide_kernel( tiled_index<3>& tidx,
+        const array_view<float>& srcGrid, const array_view<float>& dstGrid ) [[hc]]
 {
 
 	//Using some predefined macros here.  Consider this the declaration
         //  and initialization of the variables SWEEP_X, SWEEP_Y and SWEEP_Z
 
         SWEEP_VAR
-        SWEEP_X = threadIdx.x;
-        SWEEP_Y = blockIdx.x;
-        SWEEP_Z = blockIdx.y;
+        SWEEP_X = tidx.local[0];
+        SWEEP_Y = tidx.tile[0];
+        SWEEP_Z = tidx.tile[1];
 
 	float temp_swp, tempC, tempN, tempS, tempE, tempW, tempT, tempB;
 	float tempNE, tempNW, tempSE, tempSW, tempNT, tempNB, tempST ;

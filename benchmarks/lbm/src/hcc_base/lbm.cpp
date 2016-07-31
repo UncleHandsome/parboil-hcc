@@ -24,19 +24,20 @@
 #define DFL3 (1.0f/36.0f)
 
 // includes, kernels
-#include "lbm_kernel.cpp"
+#include "lbm_kernel.hpp"
 
 #define REAL_MARGIN (CALC_INDEX(0, 0, 2, 0) - CALC_INDEX(0,0,0,0))
 #define TOTAL_MARGIN (2*PADDED_X*PADDED_Y*N_CELL_ENTRIES)
 
 /******************************************************************************/
-void HCC_LBM_performStreamCollide( LBM_Grid srcGrid, LBM_Grid dstGrid ) {
-	dim3 dimBlock, dimGrid;
-        dimBlock.x = SIZE_X;
-	dimGrid.x = SIZE_Y;
-	dimGrid.y = SIZE_Z;
-	dimBlock.y = dimBlock.z = dimGrid.z = 1;
-	performStreamCollide_kernel<<<dimGrid, dimBlock>>>(srcGrid, dstGrid);
+void HCC_LBM_performStreamCollide( array_view<float>& srcGrid, array_view<float>& dstGrid ) {
+    int tile[3] = {SIZE_X, 1, 1};
+    int ext[3] = {SIZE_Y*SIZE_X, SIZE_Z, 1};
+    parallel_for_each(extent<3>(ext).tile(tile[0], tile[1], tile[2]),
+            [=] (tiled_index<3> tidx) [[hc]]
+            {
+            performStreamCollide_kernel(tidx, srcGrid, dstGrid);
+            });
 }
 
 /*############################################################################*/
@@ -60,10 +61,10 @@ void LBM_allocateGrid( float** ptr ) {
 
 /******************************************************************************/
 
-void HCC_LBM_allocateGrid( float** ptr ) {
-	const size_t size = TOTAL_PADDED_CELLS*N_CELL_ENTRIES*sizeof( float ) + 2*TOTAL_MARGIN*sizeof( float );
-	HCCMalloc((void**)ptr, size);
-	*ptr += REAL_MARGIN;
+void HCC_LBM_allocateGrid( array_view<float>* ptr ) {
+	const size_t size = TOTAL_PADDED_CELLS*N_CELL_ENTRIES + 2*TOTAL_MARGIN;
+    *ptr = array_view<float>(size);
+    *ptr = ptr->section(REAL_MARGIN, size - REAL_MARGIN);
 }
 
 /*############################################################################*/
@@ -75,9 +76,8 @@ void LBM_freeGrid( float** ptr ) {
 
 /******************************************************************************/
 
-void HCC_LBM_freeGrid( float** ptr ) {
-	HCCFree( *ptr-REAL_MARGIN );
-	*ptr = NULL;
+void HCC_LBM_freeGrid( array_view<float>* ptr ) {
+	*ptr = array_view<float>(0);
 }
 
 /*############################################################################*/
@@ -112,22 +112,21 @@ void LBM_initializeGrid( LBM_Grid grid ) {
 
 /******************************************************************************/
 
-void HCC_LBM_initializeGrid( float** d_grid, float** h_grid ) {
-	const size_t size   = TOTAL_PADDED_CELLS*N_CELL_ENTRIES*sizeof( float ) + 2*TOTAL_MARGIN*sizeof( float );
-
-	HCCMemcpy(*d_grid - REAL_MARGIN, *h_grid - REAL_MARGIN, size, HCCMemcpyHostToDevice);
+void HCC_LBM_initializeGrid( array_view<float>* d_grid, float** h_grid ) {
+	const size_t size   = TOTAL_PADDED_CELLS*N_CELL_ENTRIES + 2*TOTAL_MARGIN;
+    memmove(d_grid->data() - REAL_MARGIN, *h_grid - REAL_MARGIN, size * sizeof(float));
 }
 
-void HCC_LBM_getDeviceGrid( float** d_grid, float** h_grid ) {
-	const size_t size   = TOTAL_PADDED_CELLS*N_CELL_ENTRIES*sizeof( float ) + 2*TOTAL_MARGIN*sizeof( float );
-        HCCThreadSynchronize();
-	HCCMemcpy(*h_grid - REAL_MARGIN, *d_grid - REAL_MARGIN, size, HCCMemcpyDeviceToHost);
+void HCC_LBM_getDeviceGrid( array_view<float>* d_grid, float** h_grid ) {
+	const size_t size   = TOTAL_PADDED_CELLS*N_CELL_ENTRIES + 2*TOTAL_MARGIN;
+    d_grid->synchronize();
+	memmove(*h_grid - REAL_MARGIN, d_grid->data() - REAL_MARGIN, size * sizeof(float));
 }
 
 /*############################################################################*/
 
-void LBM_swapGrids( LBM_GridPtr grid1, LBM_GridPtr grid2 ) {
-	LBM_Grid aux = *grid1;
+void LBM_swapGrids( array_view<float>* grid1, array_view<float>* grid2 ) {
+	array_view<float> aux = *grid1;
 	*grid1 = *grid2;
 	*grid2 = aux;
 }

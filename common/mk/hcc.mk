@@ -77,10 +77,10 @@ $(BUILDDIR) :
 	mkdir -p $(BUILDDIR)
 
 $(BUILDDIR)/%.o : $(SRCDIR)/%.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(BUILDDIR)/parboil.o: $(PARBOIL_ROOT)/common/src/parboil.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 #$(BUILDDIR)/%.o : $(SRCDIR)/%.cc
 #	$(CXX) $(CXXFLAGS) -c $< -o $@

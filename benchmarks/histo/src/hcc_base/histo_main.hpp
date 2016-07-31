@@ -1,13 +1,10 @@
 #include <stdio.h>
-#include <cuda.h>
 
-#include "util.h"
-
-__device__ void testIncrementGlobal (
-        unsigned int *global_histo,
+void testIncrementGlobal (
+        const array_view<unsigned int>& global_histo,
         unsigned int sm_range_min,
         unsigned int sm_range_max,
-        const uchar4 sm)
+        const uchar4 sm) [[hc]]
 {
         const unsigned int range = sm.x;
         const unsigned int indexhi = sm.y;
@@ -26,16 +23,16 @@ __device__ void testIncrementGlobal (
 
                 if (old_bin < 255)
                 {
-                        atomicAdd (&global_histo[bin_div2], 1 << bin_offset);
+                        atomic_fetch_add (&global_histo[bin_div2], 1 << bin_offset);
                 }
         }
 }
 
-__device__ void testIncrementLocal (
-        unsigned int *global_overflow,
+void testIncrementLocal (
+        const array_view<unsigned int>& global_overflow,
         unsigned int smem[KB][256],
         const unsigned int myRange,
-        const uchar4 sm)
+        const uchar4 sm) [[hc]]
 {
         const unsigned int range = sm.x;
         const unsigned int indexhi = sm.y;
@@ -47,7 +44,7 @@ __device__ void testIncrementLocal (
         {
                 /* Atomically increment shared memory */
                 unsigned int add = (unsigned int)(1 << offset);
-                unsigned int prev = atomicAdd (&smem[indexhi][indexlo], add);
+                unsigned int prev = atomic_fetch_add (&smem[indexhi][indexlo], add);
 
                 /* Check if current bin overflowed */
                 unsigned int prev_bin_val = (prev >> offset) & 0x000000FF;
@@ -83,64 +80,69 @@ __device__ void testIncrementLocal (
                         if (overflow_into_bin_plus_2) bin_plus_2_add = (prev_bin_plus_2_val < 0x000000FF) ? 0xFFFFFFFF : 0x000000FF;
                         if (overflow_into_bin_plus_3) bin_plus_3_add = (prev_bin_plus_3_val < 0x000000FF) ? 0xFFFFFFFF : 0x000000FF;
 
-                                                      atomicAdd (&global_overflow[bin],   256);
-                        if (overflow_into_bin_plus_1) atomicAdd (&global_overflow[bin+1], bin_plus_1_add);
-                        if (overflow_into_bin_plus_2) atomicAdd (&global_overflow[bin+2], bin_plus_2_add);
-                        if (overflow_into_bin_plus_3) atomicAdd (&global_overflow[bin+3], bin_plus_3_add);
+                                                      atomic_fetch_add (&global_overflow[bin],   256);
+                        if (overflow_into_bin_plus_1) atomic_fetch_add (&global_overflow[bin+1], bin_plus_1_add);
+                        if (overflow_into_bin_plus_2) atomic_fetch_add (&global_overflow[bin+2], bin_plus_2_add);
+                        if (overflow_into_bin_plus_3) atomic_fetch_add (&global_overflow[bin+3], bin_plus_3_add);
                 }
         }
 }
 
-__device__ void clearMemory (unsigned int smem[KB][256])
+void clearMemory (unsigned int smem[KB][256], int tx, int bx) [[hc]]
 {
-        for (int i = threadIdx.x; i < BINS_PER_BLOCK / 4; i += blockDim.x)
+        for (int i = tx; i < BINS_PER_BLOCK / 4; i += bx)
         {
                 ((unsigned int*)smem)[i] = 0;
         }
 }
 
-__device__ void copyMemory (unsigned int *dst, unsigned int src[KB][256])
+void copyMemory (const array_view<unsigned int>& dst, unsigned int src[KB][256], int tx, int bx) [[hc]]
 {
-        for (int i = threadIdx.x; i < BINS_PER_BLOCK/4; i += blockDim.x)
+        for (int i = tx; i < BINS_PER_BLOCK/4; i += bx)
         {
-                atomicAdd(dst+i*4, (((unsigned int*)src)[i] >> 0) & 0xFF);
-                atomicAdd(dst+i*4+1, (((unsigned int*)src)[i] >> 8) & 0xFF);
-                atomicAdd(dst+i*4+2, (((unsigned int*)src)[i] >> 16) & 0xFF);
-                atomicAdd(dst+i*4+3, (((unsigned int*)src)[i] >> 24) & 0xFF);
+                atomic_fetch_add(&dst[i*4], (((unsigned int*)src)[i] >> 0) & 0xFF);
+                atomic_fetch_add(&dst[i*4+1], (((unsigned int*)src)[i] >> 8) & 0xFF);
+                atomic_fetch_add(&dst[i*4+2], (((unsigned int*)src)[i] >> 16) & 0xFF);
+                atomic_fetch_add(&dst[i*4+3], (((unsigned int*)src)[i] >> 24) & 0xFF);
         }
 }
 
-__global__ void histo_main_kernel (
-        uchar4 *sm_mappings,
+void histo_main_kernel (
+        tiled_index<2>& tidx,
+        const array_view<uchar4>& sm_mappings,
+        int N,
         unsigned int num_elements,
         unsigned int sm_range_min,
         unsigned int sm_range_max,
         unsigned int histo_height,
         unsigned int histo_width,
-        unsigned int *global_subhisto,
-        unsigned int *global_histo,
-        unsigned int *global_overflow)
+        const array_view<unsigned int>& global_subhisto,
+        const array_view<unsigned int>& global_histo,
+        const array_view<unsigned int>& global_overflow) [[hc]]
 {
         /* Most optimal solution uses 24 * 1024 bins per threadblock */
-        __shared__ unsigned int sub_histo[KB][256];
+        tile_static unsigned int sub_histo[KB][256];
+        int ty = tidx.tile[1];
+        int bx = tidx.tile_dim[0];
+        int tx = tidx.tile[0];
 
         /* Each threadblock contributes to a specific 24KB range of histogram,
          * and also scans every N-th line for interesting data.  N = gridDim.x
          */
-        unsigned int local_scan_range = sm_range_min + blockIdx.y;
-        unsigned int local_scan_load = blockIdx.x * blockDim.x + threadIdx.x;
+        unsigned int local_scan_range = sm_range_min + ty;
+        unsigned int local_scan_load = tidx.global[0];
 
-        clearMemory (sub_histo);
-        __syncthreads();
+        clearMemory (sub_histo, tx, bx);
+        tidx.barrier.wait();
 
-        if (blockIdx.y == 0)
+        if (ty == 0)
         {
                 /* Loop through and scan the input */
                 while (local_scan_load < num_elements)
                 {
                         /* Read buffer */
                         uchar4 sm = sm_mappings[local_scan_load];
-                        local_scan_load += blockDim.x * gridDim.x;
+                        local_scan_load += N;
 
                         /* Check input */
                         testIncrementLocal (
@@ -164,7 +166,7 @@ __global__ void histo_main_kernel (
                 {
                         /* Read buffer */
                         uchar4 sm = sm_mappings[local_scan_load];
-                        local_scan_load += blockDim.x * gridDim.x;
+                        local_scan_load += N;
 
                         /* Check input */
                         testIncrementLocal (
@@ -179,6 +181,6 @@ __global__ void histo_main_kernel (
         /* Store sub histogram to global memory */
         unsigned int store_index = (local_scan_range * BINS_PER_BLOCK);
 
-        __syncthreads();
-        copyMemory (&(global_subhisto[store_index]), sub_histo);
+        tidx.barrier.wait();
+        copyMemory (global_subhisto, sub_histo, store_index + tx, bx);
 }

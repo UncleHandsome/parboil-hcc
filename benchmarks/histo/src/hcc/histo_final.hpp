@@ -6,20 +6,21 @@
  *
  ***************************************************************************/
 
-#include "util.h"
-
+#define MIN(a, b) a < b ? a : b
 /* Combine all the sub-histogram results into one final histogram */
-__global__ void histo_final_kernel (
+void histo_final_kernel (
+    tiled_index<1>& tidx,
+    unsigned int N,
     unsigned int sm_range_min,
     unsigned int sm_range_max,
     unsigned int histo_height,
     unsigned int histo_width,
-    unsigned int *global_subhisto,
-    unsigned int *global_histo,
-    unsigned int *global_overflow,
-    unsigned int *final_histo) //final output
+    const array_view<unsigned int>& global_subhisto,
+    const array_view<unsigned int>& global_histo,
+    const array_view<unsigned int>& global_overflow,
+    const array_view<unsigned int>& final_histo) [[hc]] //final output
 {
-    unsigned int start_offset = threadIdx.x + blockIdx.x * blockDim.x;
+    unsigned int start_offset = tidx.global[0];
     const ushort4 zero_short  = {0, 0, 0, 0};
     const uint4 zero_int      = {0, 0, 0, 0};
 
@@ -27,31 +28,31 @@ __global__ void histo_final_kernel (
     unsigned int size_mid_histo = (sm_range_max - sm_range_min +1) * BINS_PER_BLOCK;
 
     /* Clear lower region of global histogram */
-    for (unsigned int i = start_offset; i < size_low_histo/4; i += gridDim.x * blockDim.x)
+    for (unsigned int i = start_offset; i < size_low_histo/4; i += N)
     {
-        ushort4 global_histo_data = ((ushort4*)global_histo)[i];
-        ((ushort4*)global_histo)[i] = zero_short;
+        ushort4 global_histo_data = global_histo.reinterpret_as<ushort4>()[i];
+        global_histo.reinterpret_as<ushort4>()[i] = zero_short;
 
-        global_histo_data.x = min (global_histo_data.x, 255);
-        global_histo_data.y = min (global_histo_data.y, 255);
-        global_histo_data.z = min (global_histo_data.z, 255);
-        global_histo_data.w = min (global_histo_data.w, 255);
+        global_histo_data.x = MIN (global_histo_data.x, 255);
+        global_histo_data.y = MIN (global_histo_data.y, 255);
+        global_histo_data.z = MIN (global_histo_data.z, 255);
+        global_histo_data.w = MIN (global_histo_data.w, 255);
 
         uchar4 final_histo_data = {
-            global_histo_data.x,
-            global_histo_data.y,
-            global_histo_data.z,
-            global_histo_data.w
+            (unsigned char)global_histo_data.x,
+            (unsigned char)global_histo_data.y,
+            (unsigned char)global_histo_data.z,
+            (unsigned char)global_histo_data.w
         };
 
-        ((uchar4*)final_histo)[i] = final_histo_data;
+        final_histo.reinterpret_as<uchar4>()[i] = final_histo_data;
     }
 
     /* Clear the middle region of the overflow buffer */
-    for (unsigned int i = (size_low_histo/4) + start_offset; i < (size_low_histo+size_mid_histo)/4; i += gridDim.x * blockDim.x)
+    for (unsigned int i = (size_low_histo/4) + start_offset; i < (size_low_histo+size_mid_histo)/4; i += N)
     {
-        uint4 global_histo_data = ((uint4*)global_overflow)[i];
-        ((uint4*)global_overflow)[i] = zero_int;
+        uint4 global_histo_data = global_overflow.reinterpret_as<uint4>()[i];
+        global_overflow.reinterpret_as<uint4>()[i] = zero_int;
 
         uint4 internal_histo_data = {
             global_histo_data.x,
@@ -70,39 +71,39 @@ __global__ void histo_final_kernel (
             internal_histo_data.w += (bin4in >> 24) & 0xFF;
         }
 
-        internal_histo_data.x = min (internal_histo_data.x, 255);
-        internal_histo_data.y = min (internal_histo_data.y, 255);
-        internal_histo_data.z = min (internal_histo_data.z, 255);
-        internal_histo_data.w = min (internal_histo_data.w, 255);
+        internal_histo_data.x = MIN (internal_histo_data.x, 255);
+        internal_histo_data.y = MIN (internal_histo_data.y, 255);
+        internal_histo_data.z = MIN (internal_histo_data.z, 255);
+        internal_histo_data.w = MIN (internal_histo_data.w, 255);
 
         uchar4 final_histo_data = {
-            internal_histo_data.x,
-            internal_histo_data.y,
-            internal_histo_data.z,
-            internal_histo_data.w
+            (unsigned char)internal_histo_data.x,
+            (unsigned char)internal_histo_data.y,
+            (unsigned char)internal_histo_data.z,
+            (unsigned char)internal_histo_data.w
         };
 
-        ((uchar4*)final_histo)[i] = final_histo_data;
+        final_histo.reinterpret_as<uchar4>()[i] = final_histo_data;
     }
 
     /* Clear the upper region of global histogram */
-    for (unsigned int i = ((size_low_histo+size_mid_histo)/4) + start_offset; i < (histo_height*histo_width)/4; i += gridDim.x * blockDim.x)
+    for (unsigned int i = ((size_low_histo+size_mid_histo)/4) + start_offset; i < (histo_height*histo_width)/4; i += N)
     {
-        ushort4 global_histo_data = ((ushort4*)global_histo)[i];
-        ((ushort4*)global_histo)[i] = zero_short;
+        ushort4 global_histo_data = global_histo.reinterpret_as<ushort4>()[i];
+        global_histo.reinterpret_as<ushort4>()[i] = zero_short;
 
-        global_histo_data.x = min (global_histo_data.x, 255);
-        global_histo_data.y = min (global_histo_data.y, 255);
-        global_histo_data.z = min (global_histo_data.z, 255);
-        global_histo_data.w = min (global_histo_data.w, 255);
+        global_histo_data.x = MIN (global_histo_data.x, 255);
+        global_histo_data.y = MIN (global_histo_data.y, 255);
+        global_histo_data.z = MIN (global_histo_data.z, 255);
+        global_histo_data.w = MIN (global_histo_data.w, 255);
 
         uchar4 final_histo_data = {
-            global_histo_data.x,
-            global_histo_data.y,
-            global_histo_data.z,
-            global_histo_data.w
+            (unsigned char)global_histo_data.x,
+            (unsigned char)global_histo_data.y,
+            (unsigned char)global_histo_data.z,
+            (unsigned char)global_histo_data.w
         };
 
-        ((uchar4*)final_histo)[i] = final_histo_data;
+        final_histo.reinterpret_as<uchar4>()[i] = final_histo_data;
     }
 }

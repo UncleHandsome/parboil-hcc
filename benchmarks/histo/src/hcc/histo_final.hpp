@@ -64,7 +64,7 @@ void histo_final_kernel (
         #pragma unroll
         for (int j = 0; j < BLOCK_X; j++)
         {
-            unsigned int bin4in = ((unsigned int*)global_subhisto)[i + j * histo_height * histo_width / 4];
+            unsigned int bin4in = global_subhisto[i + j * histo_height * histo_width / 4];
             internal_histo_data.x += (bin4in >>  0) & 0xFF;
             internal_histo_data.y += (bin4in >>  8) & 0xFF;
             internal_histo_data.z += (bin4in >> 16) & 0xFF;

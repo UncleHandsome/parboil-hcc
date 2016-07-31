@@ -11,42 +11,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <cuda.h>
+#include <hc.hpp>
+#include <hc_math.hpp>
 
 #include "util.h"
 
-__global__ void histo_prescan_kernel (
-        unsigned int* input,
-        int size,
-        unsigned int* minmax);
+using namespace hc;
 
-__global__ void histo_main_kernel (
-        uchar4 *sm_mappings,
-        unsigned int num_elements,
-        unsigned int sm_range_min,
-        unsigned int sm_range_max,
-        unsigned int histo_height,
-        unsigned int histo_width,
-        unsigned int *global_subhisto,
-        unsigned int *global_histo,
-        unsigned int *global_overflow);
+#include "histo_final.hpp"
+#include "histo_intermediates.hpp"
+#include "histo_main.hpp"
+#include "histo_prescan.hpp"
 
-__global__ void histo_intermediates_kernel (
-        uint2 *input,
-        unsigned int height,
-        unsigned int width,
-        unsigned int input_pitch,
-        uchar4 *sm_mappings);
-
-__global__ void histo_final_kernel (
-        unsigned int sm_range_min,
-        unsigned int sm_range_max,
-        unsigned int histo_height,
-        unsigned int histo_width,
-        unsigned int *global_subhisto,
-        unsigned int *global_histo,
-        unsigned int *global_overflow,
-        unsigned int *final_histo);
 
 /******************************************************************************
 * Implementation: GPU
@@ -126,26 +102,20 @@ int main(int argc, char* argv[]) {
   }
 
   int even_width = ((img_width+1)/2)*2;
-  unsigned int* input;
-  unsigned int* ranges;
-  uchar4* sm_mappings;
-  unsigned int* global_subhisto;
-  unsigned short* global_histo;
-  unsigned int* global_overflow;
-  unsigned char* final_histo;
 
-  cudaMalloc((void**)&input           , even_width*(((img_height+UNROLL-1)/UNROLL)*UNROLL)*sizeof(unsigned int));
-  cudaMalloc((void**)&ranges          , 2*sizeof(unsigned int));
-  cudaMalloc((void**)&sm_mappings     , img_width*img_height*sizeof(uchar4));
-  cudaMalloc((void**)&global_subhisto , BLOCK_X*img_width*histo_height*sizeof(unsigned int));
-  cudaMalloc((void**)&global_histo    , img_width*histo_height*sizeof(unsigned short));
-  cudaMalloc((void**)&global_overflow , img_width*histo_height*sizeof(unsigned int));
-  cudaMalloc((void**)&final_histo     , img_width*histo_height*sizeof(unsigned char));
+  array_view<unsigned int> input(even_width*(((img_height+UNROLL-1)/UNROLL)*UNROLL));
+  array_view<unsigned int> ranges(2);
+  array_view<uchar4> sm_mappings(img_width*img_height);
+  array_view<unsigned int> global_subhisto(img_width*histo_height);
+  array_view<unsigned short> global_histo(img_width*histo_height);
+  array_view<unsigned int> global_overflow(img_width*histo_height);
+  array_view<unsigned char> final_histo(img_width*histo_height);
 
-  cudaMemset(final_histo , 0 , img_width*histo_height*sizeof(unsigned char));
+  memset(final_histo.data() , 0 , img_width*histo_height*sizeof(unsigned char));
 
   for (int y=0; y < img_height; y++){
-    cudaMemcpy(&(((unsigned int*)input)[y*even_width]),&img[y*img_width],img_width*sizeof(unsigned int), cudaMemcpyHostToDevice);
+    array_view<unsigned int> src(img_width, img + y*img_width);
+    copy(src, input.section(y*even_width, img_width));
   }
 
   pb_SwitchToTimer(&timers, pb_TimerID_KERNEL);
@@ -153,63 +123,62 @@ int main(int argc, char* argv[]) {
   for (int iter = 0; iter < numIterations; iter++) {
     unsigned int ranges_h[2] = {UINT32_MAX, 0};
 
-    cudaMemcpy(ranges,ranges_h, 2*sizeof(unsigned int), cudaMemcpyHostToDevice);
+    ranges[0] = ranges_h[0];
+    ranges[1] = ranges_h[1];
 
     pb_SwitchToSubTimer(&timers, prescans , pb_TimerID_KERNEL);
 
-    histo_prescan_kernel<<<dim3(PRESCAN_BLOCKS_X),dim3(PRESCAN_THREADS)>>>((unsigned int*)input, img_height*img_width, ranges);
+    parallel_for_each(extent<1>(PRESCAN_BLOCKS_X * PRESCAN_THREADS).tile(PRESCAN_THREADS),
+            [=] (tiled_index<1> tidx) [[hc]]
+            {
+            histo_prescan_kernel(tidx, input, PRESCAN_BLOCKS_X * PRESCAN_THREADS,
+                img_height*img_width, ranges);
+            });
+
 
     pb_SwitchToSubTimer(&timers, postpremems , pb_TimerID_KERNEL);
 
-    cudaMemcpy(ranges_h,ranges, 2*sizeof(unsigned int), cudaMemcpyDeviceToHost);
+    copy(ranges, ranges_h);
 
-    cudaMemset(global_subhisto,0,img_width*histo_height*sizeof(unsigned int));
+    memset(global_subhisto.data(), 0, img_width*histo_height*sizeof(unsigned int));
 
     pb_SwitchToSubTimer(&timers, intermediates, pb_TimerID_KERNEL);
 
-    histo_intermediates_kernel<<<dim3((img_height + UNROLL-1)/UNROLL), dim3((img_width+1)/2)>>>(
-                (uint2*)(input),
-                (unsigned int)img_height,
-                (unsigned int)img_width,
-                (img_width+1)/2,
-                (uchar4*)(sm_mappings)
-    );
+    int t = (img_width+1)/2;
+    int e = ((img_height + UNROLL-1)/UNROLL) * t;
+    parallel_for_each(extent<1>(e).tile(t), [=] (tiled_index<1> tidx) [[hc]]
+            {
+            histo_intermediates_kernel(tidx, input.reinterpret_as<uint2>(),
+                img_height, img_width, (img_width+1)/2, sm_mappings);
+            });
 
     pb_SwitchToSubTimer(&timers, mains, pb_TimerID_KERNEL);
 
 
-    histo_main_kernel<<<dim3(BLOCK_X, ranges_h[1]-ranges_h[0]+1), dim3(THREADS)>>>(
-                (uchar4*)(sm_mappings),
-                img_height*img_width,
-                ranges_h[0], ranges_h[1],
-                histo_height, histo_width,
-                (unsigned int*)(global_subhisto),
-                (unsigned int*)(global_histo),
-                (unsigned int*)(global_overflow)
-    );
+    parallel_for_each(extent<2>(BLOCK_X * THREADS, ranges_h[1] - ranges_h[0] + 1).tile(THREADS, 1),
+            [=] (tiled_index<2> tidx) [[hc]]
+            {
+            histo_main_kernel(tidx, sm_mappings, BLOCK_X * THREADS,
+                img_height*img_width, ranges[0], ranges[1],
+                histo_height, histo_width, global_subhisto,
+                global_histo.reinterpret_as<unsigned int>(), global_overflow);
+            });
 
     pb_SwitchToSubTimer(&timers, finals, pb_TimerID_KERNEL);
 
-    histo_final_kernel<<<dim3(BLOCK_X*3), dim3(512)>>>(
-                ranges_h[0], ranges_h[1],
+    parallel_for_each(extent<1>(BLOCK_X*3*512).tile(512),
+            [=] (tiled_index<1> tidx) [[hc]]
+            {
+            histo_final_kernel(tidx, BLOCK_X*3*512,
+                ranges[0], ranges[1],
                 histo_height, histo_width,
-                (unsigned int*)(global_subhisto),
-                (unsigned int*)(global_histo),
-                (unsigned int*)(global_overflow),
-                (unsigned int*)(final_histo)
-    );
+                global_subhisto, global_histo.reinterpret_as<unsigned int>(),
+                global_overflow, final_histo.reinterpret_as<unsigned int>());
+            });
   }
   pb_SwitchToTimer(&timers, pb_TimerID_IO);
 
-  cudaMemcpy(histo,final_histo, histo_height*histo_width*sizeof(unsigned char), cudaMemcpyDeviceToHost);
-
-  cudaFree(input);
-  cudaFree(ranges);
-  cudaFree(sm_mappings);
-  cudaFree(global_subhisto);
-  cudaFree(global_histo);
-  cudaFree(global_overflow);
-  cudaFree(final_histo);
+  copy(final_histo.section(0, histo_height*histo_width), histo);
 
   if (parameters->outFile) {
     dump_histo_img(histo, histo_height, histo_width, parameters->outFile);

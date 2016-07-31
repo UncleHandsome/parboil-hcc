@@ -22,7 +22,10 @@
 #endif
 
 #define UNROLL 16
-#define UINT8_MAX 255
-#define UINT32_MAX 4294967295
+
+typedef struct uchar4 { unsigned char x, y, z, w; ~uchar4() [[hc, cpu]] {} } uchar4;
+typedef struct ushort4 { unsigned short x, y, z, w; } ushort4;
+typedef struct uint4 { unsigned int x, y, z, w; } uint4;
+typedef struct uint2 { unsigned int x, y; } uint2;
 
 void dump_histo_img(unsigned char* histo, unsigned int height, unsigned int width, const char *filename);

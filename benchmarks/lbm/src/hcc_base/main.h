@@ -30,16 +30,4 @@ void MAIN_finalize( const MAIN_Param* param );
 
 /*############################################################################*/
 
-#ifndef __MCUDA__
-#define CUDA_ERRCK                                                      \
-  {cudaError_t err;                                                     \
-    if ((err = cudaGetLastError()) != cudaSuccess) {                    \
-      fprintf(stderr, "CUDA error on line %d: %s\n", __LINE__, cudaGetErrorString(err)); \
-      exit(-1);                                                         \
-    }                                                                   \
-  }
-#else
-#define CUDA_ERRCK
-#endif
-
 #endif /* _MAIN_H_ */

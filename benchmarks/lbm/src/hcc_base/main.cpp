@@ -16,7 +16,7 @@
 #include <sys/stat.h>
 
 /*############################################################################*/
-static LBM_Grid CUDA_srcGrid, CUDA_dstGrid;
+static LBM_Grid HCC_srcGrid, HCC_dstGrid;
 
 
 /*############################################################################*/
@@ -41,14 +41,14 @@ int main( int nArgs, char* arg[] ) {
 
 	for( t = 1; t <= param.nTimeSteps; t++ ) {
                 pb_SwitchToTimer(&timers, pb_TimerID_KERNEL);
-		CUDA_LBM_performStreamCollide( CUDA_srcGrid, CUDA_dstGrid );
+		HCC_LBM_performStreamCollide( HCC_srcGrid, HCC_dstGrid );
                 pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
-		LBM_swapGrids( &CUDA_srcGrid, &CUDA_dstGrid );
+		LBM_swapGrids( &HCC_srcGrid, &HCC_dstGrid );
 
 		if( (t & 63) == 0 ) {
 			printf( "timestep: %i\n", t );
 #if 0
-			CUDA_LBM_getDeviceGrid((float**)&CUDA_srcGrid, (float**)&TEMP_srcGrid);
+			HCC_LBM_getDeviceGrid((float**)&HCC_srcGrid, (float**)&TEMP_srcGrid);
 			LBM_showGridStatistics( *TEMP_srcGrid );
 #endif
 		}
@@ -139,12 +139,12 @@ void MAIN_initialize( const MAIN_Param* param ) {
 
         pb_SwitchToTimer(&timers, pb_TimerID_COPY);
 	//Setup DEVICE datastructures
-	CUDA_LBM_allocateGrid( (float**) &CUDA_srcGrid );
-	CUDA_LBM_allocateGrid( (float**) &CUDA_dstGrid );
+	HCC_LBM_allocateGrid( (float**) &HCC_srcGrid );
+	HCC_LBM_allocateGrid( (float**) &HCC_dstGrid );
 
 	//Initialize DEVICE datastructures
-	CUDA_LBM_initializeGrid( (float**)&CUDA_srcGrid, (float**)&TEMP_srcGrid );
-	CUDA_LBM_initializeGrid( (float**)&CUDA_dstGrid, (float**)&TEMP_dstGrid );
+	HCC_LBM_initializeGrid( (float**)&HCC_srcGrid, (float**)&TEMP_srcGrid );
+	HCC_LBM_initializeGrid( (float**)&HCC_dstGrid, (float**)&TEMP_dstGrid );
 
         pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
 	LBM_showGridStatistics( TEMP_srcGrid );
@@ -162,7 +162,7 @@ void MAIN_finalize( const MAIN_Param* param ) {
 	LBM_allocateGrid( (float**) &TEMP_srcGrid );
 
         pb_SwitchToTimer(&timers, pb_TimerID_COPY);
-	CUDA_LBM_getDeviceGrid((float**)&CUDA_srcGrid, (float**)&TEMP_srcGrid);
+	HCC_LBM_getDeviceGrid((float**)&HCC_srcGrid, (float**)&TEMP_srcGrid);
 
         pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
 	LBM_showGridStatistics( TEMP_srcGrid );
@@ -170,7 +170,7 @@ void MAIN_finalize( const MAIN_Param* param ) {
 	LBM_storeVelocityField( TEMP_srcGrid, param->resultFilename, TRUE );
 
 	LBM_freeGrid( (float**) &TEMP_srcGrid );
-	CUDA_LBM_freeGrid( (float**) &CUDA_srcGrid );
-	CUDA_LBM_freeGrid( (float**) &CUDA_dstGrid );
+	HCC_LBM_freeGrid( (float**) &HCC_srcGrid );
+	HCC_LBM_freeGrid( (float**) &HCC_dstGrid );
 }
 

@@ -18,31 +18,25 @@
 // includes, project
 #include "lbm.h"
 #include "main.h"
-#ifndef __MCUDA__
-#include <cuda.h>
-#else
-#include <mcuda.h>
-#endif
 
 #define DFL1 (1.0f/ 3.0f)
 #define DFL2 (1.0f/18.0f)
 #define DFL3 (1.0f/36.0f)
 
 // includes, kernels
-#include "lbm_kernel.cu"
+#include "lbm_kernel.cpp"
 
 #define REAL_MARGIN (CALC_INDEX(0, 0, 2, 0) - CALC_INDEX(0,0,0,0))
 #define TOTAL_MARGIN (2*PADDED_X*PADDED_Y*N_CELL_ENTRIES)
 
 /******************************************************************************/
-void CUDA_LBM_performStreamCollide( LBM_Grid srcGrid, LBM_Grid dstGrid ) {
+void HCC_LBM_performStreamCollide( LBM_Grid srcGrid, LBM_Grid dstGrid ) {
 	dim3 dimBlock, dimGrid;
         dimBlock.x = SIZE_X;
 	dimGrid.x = SIZE_Y;
 	dimGrid.y = SIZE_Z;
 	dimBlock.y = dimBlock.z = dimGrid.z = 1;
 	performStreamCollide_kernel<<<dimGrid, dimBlock>>>(srcGrid, dstGrid);
-  CUDA_ERRCK;
 }
 
 /*############################################################################*/
@@ -66,10 +60,9 @@ void LBM_allocateGrid( float** ptr ) {
 
 /******************************************************************************/
 
-void CUDA_LBM_allocateGrid( float** ptr ) {
+void HCC_LBM_allocateGrid( float** ptr ) {
 	const size_t size = TOTAL_PADDED_CELLS*N_CELL_ENTRIES*sizeof( float ) + 2*TOTAL_MARGIN*sizeof( float );
-	cudaMalloc((void**)ptr, size);
-        CUDA_ERRCK;
+	HCCMalloc((void**)ptr, size);
 	*ptr += REAL_MARGIN;
 }
 
@@ -82,8 +75,8 @@ void LBM_freeGrid( float** ptr ) {
 
 /******************************************************************************/
 
-void CUDA_LBM_freeGrid( float** ptr ) {
-	cudaFree( *ptr-REAL_MARGIN );
+void HCC_LBM_freeGrid( float** ptr ) {
+	HCCFree( *ptr-REAL_MARGIN );
 	*ptr = NULL;
 }
 
@@ -119,19 +112,16 @@ void LBM_initializeGrid( LBM_Grid grid ) {
 
 /******************************************************************************/
 
-void CUDA_LBM_initializeGrid( float** d_grid, float** h_grid ) {
+void HCC_LBM_initializeGrid( float** d_grid, float** h_grid ) {
 	const size_t size   = TOTAL_PADDED_CELLS*N_CELL_ENTRIES*sizeof( float ) + 2*TOTAL_MARGIN*sizeof( float );
 
-	cudaMemcpy(*d_grid - REAL_MARGIN, *h_grid - REAL_MARGIN, size, cudaMemcpyHostToDevice);
-        CUDA_ERRCK;
+	HCCMemcpy(*d_grid - REAL_MARGIN, *h_grid - REAL_MARGIN, size, HCCMemcpyHostToDevice);
 }
 
-void CUDA_LBM_getDeviceGrid( float** d_grid, float** h_grid ) {
+void HCC_LBM_getDeviceGrid( float** d_grid, float** h_grid ) {
 	const size_t size   = TOTAL_PADDED_CELLS*N_CELL_ENTRIES*sizeof( float ) + 2*TOTAL_MARGIN*sizeof( float );
-        cudaThreadSynchronize();
-        CUDA_ERRCK;
-	cudaMemcpy(*h_grid - REAL_MARGIN, *d_grid - REAL_MARGIN, size, cudaMemcpyDeviceToHost);
-        CUDA_ERRCK;
+        HCCThreadSynchronize();
+	HCCMemcpy(*h_grid - REAL_MARGIN, *d_grid - REAL_MARGIN, size, HCCMemcpyDeviceToHost);
 }
 
 /*############################################################################*/

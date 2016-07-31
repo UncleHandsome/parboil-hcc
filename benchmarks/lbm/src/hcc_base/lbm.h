@@ -46,13 +46,13 @@ void LBM_showGridStatistics( LBM_Grid Grid );
 void LBM_storeVelocityField( LBM_Grid grid, const char* filename,
                            const BOOL binary );
 
-/* CUDA ***********************************************************************/
+/* HCC ***********************************************************************/
 
-void CUDA_LBM_allocateGrid( float** ptr );
-void CUDA_LBM_freeGrid( float** ptr );
-void CUDA_LBM_initializeGrid( float** d_grid, float** h_grid );
-void CUDA_LBM_getDeviceGrid( float** d_grid, float** h_grid );
-void CUDA_LBM_performStreamCollide( LBM_Grid srcGrid, LBM_Grid dstGrid );
+void HCC_LBM_allocateGrid( float** ptr );
+void HCC_LBM_freeGrid( float** ptr );
+void HCC_LBM_initializeGrid( float** d_grid, float** h_grid );
+void HCC_LBM_getDeviceGrid( float** d_grid, float** h_grid );
+void HCC_LBM_performStreamCollide( LBM_Grid srcGrid, LBM_Grid dstGrid );
 #ifdef __cplusplus
 }
 #endif

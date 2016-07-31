@@ -1,25 +1,22 @@
-/***************************************************************************
- *
- *            (C) Copyright 2010 The Board of Trustees of the
- *                        University of Illinois
- *                         All Rights Reserved
- *
- ***************************************************************************/
-
 #include <stdio.h>
 #include <stdint.h>
-#include <cuda.h>
 
-#include "util.h"
-
-__global__ void histo_prescan_kernel (unsigned int* input, int size, unsigned int* minmax)
+void histo_prescan_kernel (
+        tiled_index<1>& tidx,
+        const array_view<unsigned int>& input,
+        int N, int size,
+        const array_view<unsigned int>& minmax) [[hc]]
 {
-    __shared__ float Avg[PRESCAN_THREADS];
-    __shared__ float StdDev[PRESCAN_THREADS];
+    tile_static float Avg[PRESCAN_THREADS];
+    tile_static float StdDev[PRESCAN_THREADS];
 
-    int stride = size/gridDim.x;
-    int addr = blockIdx.x*stride+threadIdx.x;
-    int end = blockIdx.x*stride + stride/8; // Only sample 1/8th of the input data
+    int tx = tidx.tile[0];
+    int bx = tidx.local[0];
+    int dx = tidx.tile_dim[0];
+
+    int stride = size * dx/N;
+    int addr = bx*stride+tx;
+    int end = bx*stride + stride/8; // Only sample 1/8th of the input data
 
     // Compute the average per thread
     float avg = 0.0;
@@ -27,25 +24,25 @@ __global__ void histo_prescan_kernel (unsigned int* input, int size, unsigned in
     while (addr < end){
         avg += input[addr];
         count++;
-	addr += blockDim.x;
+        addr += bx;
     }
     avg /= count;
-    Avg[threadIdx.x] = avg;
+    Avg[tx] = avg;
 
     // Compute the standard deviation per thread
-    int addr2 = blockIdx.x*stride+threadIdx.x;
+    int addr2 = bx*stride+tx;
     float stddev = 0;
     while (addr2 < end){
         stddev += (input[addr2]-avg)*(input[addr2]-avg);
-        addr2 += blockDim.x;
+        addr2 += dx;
     }
     stddev /= count;
-    StdDev[threadIdx.x] = sqrtf(stddev);
+    StdDev[tx] = sqrtf(stddev);
 
 #define SUM(stride__)\
-if(threadIdx.x < stride__){\
-    Avg[threadIdx.x] += Avg[threadIdx.x+stride__];\
-    StdDev[threadIdx.x] += StdDev[threadIdx.x+stride__];\
+if(tx < stride__){\
+    Avg[tx] += Avg[tx+stride__];\
+    StdDev[tx] += StdDev[tx+stride__];\
 }
 
     // Add all the averages and standard deviations from all the threads
@@ -53,7 +50,7 @@ if(threadIdx.x < stride__){\
     // real average and standard deviation.
 #if (PRESCAN_THREADS >= 32)
     for (int stride = PRESCAN_THREADS/2; stride >= 32; stride = stride >> 1){
-	__syncthreads();
+        tidx.barrier.wait();
 	SUM(stride);
     }
 #endif
@@ -70,7 +67,7 @@ if(threadIdx.x < stride__){\
     SUM(2);
 #endif
 
-    if (threadIdx.x == 0){
+    if (tx == 0){
         float avg = Avg[0]+Avg[1];
 	avg /= PRESCAN_THREADS;
 	float stddev = StdDev[0]+StdDev[1];
@@ -79,7 +76,7 @@ if(threadIdx.x < stride__){\
         // Take the maximum and minimum range from all the blocks. This will
         // be the final answer. The standard deviation is taken out to 10 sigma
         // away from the average. The value 10 was obtained empirically.
-	    atomicMin(minmax,((unsigned int)(avg-10*stddev))/(KB*1024));
-        atomicMax(minmax+1,((unsigned int)(avg+10*stddev))/(KB*1024));
+	    atomic_fetch_min(&minmax[0],((unsigned int)(avg-10*stddev))/(KB*1024));
+        atomic_fetch_min(&minmax[1],((unsigned int)(avg+10*stddev))/(KB*1024));
     }
 }

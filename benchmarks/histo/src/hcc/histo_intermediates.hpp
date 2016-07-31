@@ -1,19 +1,8 @@
-/***************************************************************************
- *
- *            (C) Copyright 2010 The Board of Trustees of the
- *                        University of Illinois
- *                         All Rights Reserved
- *
- ***************************************************************************/
-
 #include <stdio.h>
-#include <cuda.h>
 
-#include "util.h"
-
-__device__ void calculateBin (
+void calculateBin (
         const unsigned int bin,
-        uchar4 *sm_mapping)
+        uchar4& sm_mapping) [[hc]]
 {
         unsigned char offset  =  bin        %   4;
         unsigned char indexlo = (bin >>  2) % 256;
@@ -28,22 +17,26 @@ __device__ void calculateBin (
         sm.z = indexlo;
         sm.w = offset;
 
-        *sm_mapping = sm;
+        sm_mapping = sm;
 }
 
-__global__ void histo_intermediates_kernel (
-        uint2 *input,
+void histo_intermediates_kernel (
+        tiled_index<1>& tidx,
+        const array_view<uint2>& input,
         unsigned int height,
         unsigned int width,
         unsigned int input_pitch,
-        uchar4 *sm_mappings)
+        const array_view<uchar4>& sm_mappings) [[hc]]
 {
-        unsigned int line = UNROLL * blockIdx.x;// 16 is the unroll factor;
+        int blockId = tidx.tile[0];
+        int threadId = tidx.local[0];
+        int dimId = tidx.tile_dim[0];
+        unsigned int line = UNROLL * blockId;// 16 is the unroll factor;
 
-        uint2 *load_bin = input + line * input_pitch + threadIdx.x;
+        uint2 *load_bin = &input[line * input_pitch + threadId];
 
-        unsigned int store = line * width + threadIdx.x;
-        bool skip = (width % 2) && (threadIdx.x == (blockDim.x - 1));
+        unsigned int store = line * width + threadId;
+        bool skip = (width % 2) && (threadId == (dimId - 1));
 
         #pragma unroll
         for (int i = 0; i < UNROLL; i++)
@@ -52,12 +45,12 @@ __global__ void histo_intermediates_kernel (
 
                 calculateBin (
                         bin_value.x,
-                        &sm_mappings[store]
+                        sm_mappings[store]
                 );
 
                 if (!skip) calculateBin (
                         bin_value.y,
-                        &sm_mappings[store + blockDim.x]
+                        sm_mappings[store + dimId]
                 );
 
                 load_bin += input_pitch;

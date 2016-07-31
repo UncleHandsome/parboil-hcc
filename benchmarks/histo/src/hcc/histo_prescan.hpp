@@ -24,7 +24,7 @@ void histo_prescan_kernel (
     while (addr < end){
         avg += input[addr];
         count++;
-        addr += bx;
+        addr += dx;
     }
     avg /= count;
     Avg[tx] = avg;
@@ -77,6 +77,6 @@ if(tx < stride__){\
         // be the final answer. The standard deviation is taken out to 10 sigma
         // away from the average. The value 10 was obtained empirically.
 	    atomic_fetch_min(&minmax[0],((unsigned int)(avg-10*stddev))/(KB*1024));
-        atomic_fetch_min(&minmax[1],((unsigned int)(avg+10*stddev))/(KB*1024));
+        atomic_fetch_max(&minmax[1],((unsigned int)(avg+10*stddev))/(KB*1024));
     }
 }

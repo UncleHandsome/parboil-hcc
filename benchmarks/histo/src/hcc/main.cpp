@@ -104,7 +104,6 @@ int main(int argc, char* argv[]) {
   int even_width = ((img_width+1)/2)*2;
 
   array_view<unsigned int> input(even_width*(((img_height+UNROLL-1)/UNROLL)*UNROLL));
-  array_view<unsigned int> ranges(2);
   array_view<uchar4> sm_mappings(img_width*img_height);
   array_view<unsigned int> global_subhisto(img_width*histo_height);
   array_view<unsigned short> global_histo(img_width*histo_height);
@@ -122,9 +121,7 @@ int main(int argc, char* argv[]) {
 
   for (int iter = 0; iter < numIterations; iter++) {
     unsigned int ranges_h[2] = {UINT32_MAX, 0};
-
-    ranges[0] = ranges_h[0];
-    ranges[1] = ranges_h[1];
+    array_view<unsigned int> ranges(2, ranges_h);
 
     pb_SwitchToSubTimer(&timers, prescans , pb_TimerID_KERNEL);
 
@@ -135,10 +132,9 @@ int main(int argc, char* argv[]) {
                 img_height*img_width, ranges);
             });
 
-
     pb_SwitchToSubTimer(&timers, postpremems , pb_TimerID_KERNEL);
 
-    copy(ranges, ranges_h);
+    ranges.synchronize();
 
     memset(global_subhisto.data(), 0, img_width*histo_height*sizeof(unsigned int));
 

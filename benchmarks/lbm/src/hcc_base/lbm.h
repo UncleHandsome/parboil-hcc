@@ -44,7 +44,7 @@ void LBM_freeGrid( float** ptr );
 void LBM_initializeGrid( LBM_Grid grid );
 void LBM_initializeSpecialCellsForLDC( LBM_Grid grid );
 void LBM_loadObstacleFile( LBM_Grid grid, const char* filename );
-void LBM_swapGrids( array_view<float> *grid1, array_view<float> *grid2 );
+void LBM_swapGrids( array_view<float> &grid1, array_view<float> &grid2 );
 void LBM_showGridStatistics( LBM_Grid Grid );
 void LBM_storeVelocityField( LBM_Grid grid, const char* filename,
                            const BOOL binary );

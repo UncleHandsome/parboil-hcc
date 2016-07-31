@@ -125,10 +125,10 @@ void HCC_LBM_getDeviceGrid( array_view<float>* d_grid, float** h_grid ) {
 
 /*############################################################################*/
 
-void LBM_swapGrids( array_view<float>* grid1, array_view<float>* grid2 ) {
-	array_view<float> aux = *grid1;
-	*grid1 = *grid2;
-	*grid2 = aux;
+void LBM_swapGrids( array_view<float>& grid1, array_view<float>& grid2 ) {
+	array_view<float> aux = std::move(grid1);
+	grid1 = std::move(grid2);
+	grid2 = std::move(aux);
 }
 
 /*############################################################################*/

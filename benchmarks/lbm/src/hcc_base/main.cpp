@@ -43,7 +43,7 @@ int main( int nArgs, char* arg[] ) {
                 pb_SwitchToTimer(&timers, pb_TimerID_KERNEL);
 		HCC_LBM_performStreamCollide( HCC_srcGrid, HCC_dstGrid );
                 pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
-		LBM_swapGrids( &HCC_srcGrid, &HCC_dstGrid );
+		LBM_swapGrids( HCC_srcGrid, HCC_dstGrid );
 
 		if( (t & 63) == 0 ) {
 			printf( "timestep: %i\n", t );

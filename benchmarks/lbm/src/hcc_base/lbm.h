@@ -60,6 +60,8 @@ void HCC_LBM_performStreamCollide( array_view<float>& srcGrid, array_view<float>
 }
 #endif
 
+#define REAL_MARGIN (CALC_INDEX(0, 0, 2, 0) - CALC_INDEX(0,0,0,0))
+
 /*############################################################################*/
 
 #endif /* _LBM_H_ */

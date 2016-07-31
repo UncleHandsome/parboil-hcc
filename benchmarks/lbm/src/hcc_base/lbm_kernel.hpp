@@ -14,8 +14,10 @@
 /******************************************************************************/
 
 void performStreamCollide_kernel( tiled_index<3>& tidx,
-        const array_view<float>& srcGrid, const array_view<float>& dstGrid ) [[hc]]
+        const array_view<float>& src, const array_view<float>& dst ) [[hc]]
 {
+    const auto srcGrid = src.section(index<1>(REAL_MARGIN));
+    const auto dstGrid = dst.section(index<1>(REAL_MARGIN));
 
 	//Using some predefined macros here.  Consider this the declaration
         //  and initialization of the variables SWEEP_X, SWEEP_Y and SWEEP_Z

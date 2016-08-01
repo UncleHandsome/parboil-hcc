@@ -9,14 +9,11 @@
 #include <parboil.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <hc.hpp>
-
-using namespace hc;
 
 #include "file.h"
 #include "common.h"
-#include "cuerr.h"
 #include "kernels.hpp"
+
 static int read_data(float *A0, int nx,int ny,int nz,FILE *fp)
 {	
 	int s=0;
@@ -51,7 +48,7 @@ int main(int argc, char** argv) {
 	//declaration
 	int nx,ny,nz;
 	int size;
-  int iteration;
+    int iteration;
 	float c0=1.0f/6.0f;
 	float c1=1.0f/6.0f/6.0f;
 
@@ -82,58 +79,68 @@ int main(int argc, char** argv) {
 	//host data
 	float *h_A0;
 	float *h_Anext;
+	//device
+	float *d_A0;
+	float *d_Anext;
 
 	
+
+
 	size=nx*ny*nz;
 	
-  h_A0=(float*)malloc(sizeof(float)*size);
-  h_Anext=(float*)malloc(sizeof(float)*size);
+	h_A0=(float*)malloc(sizeof(float)*size);
+	h_Anext=(float*)malloc(sizeof(float)*size);
   pb_SwitchToTimer(&timers, pb_TimerID_IO);
   FILE *fp = fopen(parameters->inpFiles[0], "rb");
-  read_data(h_A0, nx,ny,nz,fp);
+	read_data(h_A0, nx,ny,nz,fp);
   fclose(fp);
 	
 	pb_SwitchToTimer(&timers, pb_TimerID_COPY);
 	//memory allocation
-    array_view<float> d_A0(size, h_A0);
-    array_view<float> d_Anext(size, h_Anext);
-    // copy(d_A0, d_Anext);
+	cudaMalloc((void **)&d_A0, size*sizeof(float));
+	cudaMalloc((void **)&d_Anext, size*sizeof(float));
+	cudaMemset(d_Anext,0,size*sizeof(float));
+
+	//memory copy
+	cudaMemcpy(d_A0, h_A0, size*sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_Anext, d_A0, size*sizeof(float), cudaMemcpyDeviceToDevice);
 
 	pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
 
-	//only use 1D thread block
-    int block[3] = {nx-1, 1, 1};
-    int grid[3] = {(ny-1)*(nx-1), nz-2, 1};
+	//only use tx-by-ty threads
+	int tx=32;
+	int ty=4;
+
+	dim3 block (tx, ty, 1);
+	//also change threads size maping from tx by ty to 2tx x ty
+	dim3 grid ((nx+tx*2-1)/(tx*2), (ny+ty-1)/ty,1);
+	int sh_size = tx*2*ty*sizeof(float);	
+
+
 
 
 	//main execution
 	pb_SwitchToTimer(&timers, pb_TimerID_KERNEL);
 	for(int t=0;t<iteration;t++)
 	{
-        if (t & 1)
-            parallel_for_each(extent<3>(grid).tile(block[0], block[1], block[2]),
-                [=] (tiled_index<3> tidx) [[hc]]
-                {
-                naive_kernel(tidx, c0,c1, d_Anext, d_A0, nx, ny,  nz);
-                });
-
-        else
-        parallel_for_each(extent<3>(grid).tile(block[0], block[1], block[2]),
-                [=] (tiled_index<3> tidx) [[hc]]
-                {
-                naive_kernel(tidx, c0,c1, d_A0, d_Anext, nx, ny,  nz);
-                });
-    // array_view<float> d_temp = std::move(d_A0);
-    // d_A0 = std::move(d_Anext);
-    // d_Anext = std::move(d_temp);
+		block2D_hybrid_coarsen_x<<<grid, block,sh_size>>>(c0,c1, d_A0, d_Anext, nx, ny,  nz);
+    float *d_temp = d_A0;
+    d_A0 = d_Anext;
+    d_Anext = d_temp;
 
 	}
-  // array_view<float> d_temp = std::move(d_A0);
-  // d_A0 = std::move(d_Anext);
-  // d_Anext = std::move(d_temp);
+  CUERR // check and clear any existing errors
+
+  float *d_temp = d_A0;
+  d_A0 = d_Anext;
+  d_Anext = d_temp;
+	
+	
 	
 	pb_SwitchToTimer(&timers, pb_TimerID_COPY);
-    d_Anext.synchronize();
+	cudaMemcpy(h_Anext, d_Anext,size*sizeof(float), cudaMemcpyDeviceToHost);
+	cudaFree(d_A0);
+  cudaFree(d_Anext);
 
 	if (parameters->outFile) {
 		 pb_SwitchToTimer(&timers, pb_TimerID_IO);

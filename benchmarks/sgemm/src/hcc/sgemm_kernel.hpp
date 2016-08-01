@@ -38,35 +38,49 @@ for i < M ; i += 64   // thread block.x
 #define TILE_TB_HEIGHT 8
 #define TILE_M (TILE_N*TILE_TB_HEIGHT)
 
-__global__ void mysgemmNT( const float *A, int lda, const float *B, int ldb, float* C, int ldc, int k, float alpha, float beta )
+void mysgemmNT(
+        tiled_index<2> tidx,
+        const array_view<const float>& A, int lda,
+        const array_view<const float>& B, int ldb,
+        const array_view<float>& C, int ldc, int k, float alpha, float beta ) [[hc]]
 {
     // Partial results
+    index<2> threadIdx(tidx.local);
+    index<2> blockIdx(tidx.tile);
+    index<2> globalIdx(tidx.global);
+    index<2> blockDim(tidx.tile_dim);
+
     float c[TILE_N];
     for (int i=0; i < TILE_N; i++)
 	c[i] = 0.0f;
-    int mid = threadIdx.y * blockDim.x + threadIdx.x; //flattened id
-    int m = blockIdx.x * TILE_M + mid;
-    int n = blockIdx.y * TILE_N + threadIdx.x;
-    __shared__ float b_s[TILE_TB_HEIGHT][TILE_N];
+    int mid = threadIdx[1] * blockDim[0] + threadIdx[0]; //flattened id
+    int m = blockIdx[0] * TILE_M + mid;
+    int n = blockIdx[1] * TILE_N + threadIdx[0];
+    tile_static float b_s[TILE_TB_HEIGHT][TILE_N];
     for (int i = 0; i < k; i+=TILE_TB_HEIGHT) {
 	float a;
-	b_s[threadIdx.y][threadIdx.x]=B[n + (i+threadIdx.y)*ldb];
-	__syncthreads();
+	b_s[threadIdx[1]][threadIdx[0]]=B[n + (i+threadIdx[1])*ldb];
+    tidx.barrier.wait();
 	for (int j = 0; j < TILE_TB_HEIGHT; j++) {
 	    a = A[m + (i+j)*lda];
 	    for (int kk = 0; kk < TILE_N; kk++)
 		c[kk] += a * b_s[j][kk];
 
 	}
-	__syncthreads();
+    tidx.barrier.wait();
     }
-    int t = ldc*blockIdx.y * TILE_N + m;
+    int t = ldc*blockIdx[1] * TILE_N + m;
     for (int i = 0; i < TILE_N; i++) {
 	C[t+i*ldc] = C[t+i*ldc] * beta + alpha * c[i];
     }
 }
 
-void regtileSgemm( char transa, char transb, int m, int n, int k, float alpha, const float *A, int lda, const float *B, int ldb, float beta, float *C, int ldc )
+void regtileSgemm(
+        accelerator_view& av,
+        char transa, char transb, int m, int n, int k, float alpha,
+        array_view<const float>& A, int lda,
+        array_view<const float>& B, int ldb, float beta,
+        array_view<float>& C, int ldc )
 {
   if ((transa != 'N') && (transa != 'n')) {
     std::cerr << "unsupported value of 'transa' in regtileSgemm()" << std::endl;
@@ -85,9 +99,14 @@ void regtileSgemm( char transa, char transb, int m, int n, int k, float alpha, c
   }
 
 
-  dim3 grid( m/TILE_M, n/TILE_N ), threads( TILE_N, TILE_TB_HEIGHT );
-  mysgemmNT<<<grid, threads>>>( A, lda, B, ldb, C, ldc, k, alpha, beta);
-  CHECK_ERROR("mySgemm");
+  int dg[2] = {m*TILE_N/TILE_M,n*TILE_TB_HEIGHT/TILE_N};
+  int db[2] = {TILE_N,TILE_TB_HEIGHT};
+
+  parallel_for_each(av, extent<2>(dg).tile(db[0], db[1]),
+          [=] (tiled_index<2> tidx) [[hc]]
+          {
+          mysgemmNT(tidx, A, lda, B, ldb, C, ldc, k, alpha, beta);
+          });
 
 }
 

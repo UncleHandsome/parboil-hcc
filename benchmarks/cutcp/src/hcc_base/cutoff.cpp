@@ -116,9 +116,9 @@ static void hcc_cutoff_potential_lattice(
   tile_static float AtomBinCache[BIN_CACHE_MAXLEN * BIN_DEPTH * 4];
   tile_static int3 myBinIndex;
 
-  int tz = tidx.local[0], ty = tidx.local[1], tx = tidx.local[2];
-  int bz = tidx.tile[0], by = tidx.tile[1], bx = tidx.tile[2];
-  int gz = tidx.tile_dim[0], gy = tidx.tile_dim[1], gx = tidx.tile_dim[2];
+  int tz = tidx.local[2], ty = tidx.local[1], tx = tidx.local[0];
+  int bz = tidx.tile[2], by = tidx.tile[1], bx = tidx.tile[0];
+  int gz = tidx.tile_dim[2], gy = tidx.tile_dim[1], gx = tidx.tile_dim[0];
 
   //const int xRegionIndex = (bx >> 2);
   //const int yRegionIndex = by;
@@ -482,7 +482,7 @@ extern "C" int gpu_compute_cutoff_potential_lattice(
   g.x = 4 * xRegionDim * b.x;
   g.y = yRegionDim * b.y;
   g.z = 1 * b.z;
-  tiled_extent<3> text = extent<3>(g.z, g.y, g.x).tile(b.z, b.y, b.x);
+  tiled_extent<3> text = extent<3>(g.x, g.y, g.z).tile(b.x, b.y, b.z);
 
   /* allocate and initialize memory on HCC device */
   pb_SwitchToTimer(timers, pb_TimerID_COPY);

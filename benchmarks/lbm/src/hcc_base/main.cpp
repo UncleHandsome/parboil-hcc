@@ -8,16 +8,21 @@
 
 /*############################################################################*/
 
-#include "main.h"
-#include "lbm.h"
 #include <stdio.h>
 #include <stdlib.h>
-
 #include <sys/stat.h>
+#include <parboil.h>
+#include <hc.hpp>
+using namespace hc;
+
+#include "layout_config.h"
+#include "lbm_macros.h"
+#include "main.h"
+#include "lbm.h"
 
 /*############################################################################*/
-static array_view<float> HCC_srcGrid(0), HCC_dstGrid(0);
 
+static array_view<float> *HCC_srcGrid, *HCC_dstGrid;
 
 /*############################################################################*/
 
@@ -31,29 +36,29 @@ int main( int nArgs, char* arg[] ) {
         params = pb_ReadParameters(&nArgs, arg);
 
 
-	static LBM_GridPtr TEMP_srcGrid;
+	static float** TEMP_srcGrid;
 	//Setup TEMP datastructures
 	LBM_allocateGrid( (float**) &TEMP_srcGrid );
 	MAIN_parseCommandLine( nArgs, arg, &param, params );
 	MAIN_printInfo( &param );
 
 	MAIN_initialize( &param );
-
+	
 	for( t = 1; t <= param.nTimeSteps; t++ ) {
                 pb_SwitchToTimer(&timers, pb_TimerID_KERNEL);
-		HCC_LBM_performStreamCollide( HCC_srcGrid, HCC_dstGrid );
+		HCC_LBM_performStreamCollide( *HCC_srcGrid, *HCC_dstGrid );
                 pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
-		LBM_swapGrids( HCC_srcGrid, HCC_dstGrid );
+		LBM_swapGrids( &HCC_srcGrid, &HCC_dstGrid );
 
 		if( (t & 63) == 0 ) {
 			printf( "timestep: %i\n", t );
 #if 0
-			HCC_LBM_getDeviceGrid((float**)&HCC_srcGrid, (float**)&TEMP_srcGrid);
+			CUDA_LBM_getDeviceGrid((float**)&CUDA_srcGrid, (float**)&TEMP_srcGrid);
 			LBM_showGridStatistics( *TEMP_srcGrid );
 #endif
 		}
 	}
-
+	
 	MAIN_finalize( &param );
 
 	LBM_freeGrid( (float**) &TEMP_srcGrid );
@@ -118,7 +123,7 @@ void MAIN_printInfo( const MAIN_Param* param ) {
 /*############################################################################*/
 
 void MAIN_initialize( const MAIN_Param* param ) {
-	static LBM_Grid TEMP_srcGrid, TEMP_dstGrid;
+	static float* TEMP_srcGrid, *TEMP_dstGrid;
 
         pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
 	//Setup TEMP datastructures
@@ -133,19 +138,20 @@ void MAIN_initialize( const MAIN_Param* param ) {
 		LBM_loadObstacleFile( TEMP_dstGrid, param->obstacleFilename );
 	}
 
-        pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
+	pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
 	LBM_initializeSpecialCellsForLDC( TEMP_srcGrid );
 	LBM_initializeSpecialCellsForLDC( TEMP_dstGrid );
-
+	
         pb_SwitchToTimer(&timers, pb_TimerID_COPY);
+	
 	//Setup DEVICE datastructures
 	HCC_LBM_allocateGrid( &HCC_srcGrid );
 	HCC_LBM_allocateGrid( &HCC_dstGrid );
-
+	
 	//Initialize DEVICE datastructures
-	HCC_LBM_initializeGrid( &HCC_srcGrid, (float**)&TEMP_srcGrid );
-	HCC_LBM_initializeGrid( &HCC_dstGrid, (float**)&TEMP_dstGrid );
-
+	HCC_LBM_initializeGrid( HCC_srcGrid, TEMP_srcGrid );
+	HCC_LBM_initializeGrid( HCC_dstGrid, TEMP_dstGrid );
+	
         pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
 	LBM_showGridStatistics( TEMP_srcGrid );
 
@@ -156,13 +162,13 @@ void MAIN_initialize( const MAIN_Param* param ) {
 /*############################################################################*/
 
 void MAIN_finalize( const MAIN_Param* param ) {
-	LBM_Grid TEMP_srcGrid;
+	float* TEMP_srcGrid;
 
 	//Setup TEMP datastructures
 	LBM_allocateGrid( (float**) &TEMP_srcGrid );
 
         pb_SwitchToTimer(&timers, pb_TimerID_COPY);
-	HCC_LBM_getDeviceGrid(&HCC_srcGrid, (float**)&TEMP_srcGrid);
+	HCC_LBM_getDeviceGrid(HCC_srcGrid, TEMP_srcGrid);
 
         pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
 	LBM_showGridStatistics( TEMP_srcGrid );
@@ -170,7 +176,6 @@ void MAIN_finalize( const MAIN_Param* param ) {
 	LBM_storeVelocityField( TEMP_srcGrid, param->resultFilename, TRUE );
 
 	LBM_freeGrid( (float**) &TEMP_srcGrid );
-	HCC_LBM_freeGrid( &HCC_srcGrid );
-	HCC_LBM_freeGrid( &HCC_dstGrid );
+	HCC_LBM_freeGrid( HCC_srcGrid );
+	HCC_LBM_freeGrid( HCC_dstGrid );
 }
-

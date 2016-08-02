@@ -6,27 +6,30 @@
  *cr
  ***************************************************************************/
 
-#ifndef LBM_KERNEL_CU
-#define LBM_KERNEL_CU
+#ifndef LBM_KERNEL_HCC
+#define LBM_KERNEL_HCC
 
-#include "lbm.h"
-
+#include "layout_config.h"
+#include "lbm_macros.h"
 /******************************************************************************/
 
-void performStreamCollide_kernel( tiled_index<3>& tidx,
-        const array_view<float>& src, const array_view<float>& dst ) [[hc]]
+ void performStreamCollide_kernel(
+         tiled_index<2>& tidx,
+         const array_view<float>& srcGrid_, 
+         const array_view<float>& dstGrid_ ) [[hc]]
 {
-    const auto srcGrid = src.section(index<1>(REAL_MARGIN));
-    const auto dstGrid = dst.section(index<1>(REAL_MARGIN));
+	float* srcGrid = srcGrid_.data() + MARGIN;
+	float* dstGrid = dstGrid_.data() + MARGIN;
+
 
 	//Using some predefined macros here.  Consider this the declaration
         //  and initialization of the variables SWEEP_X, SWEEP_Y and SWEEP_Z
 
         SWEEP_VAR
-        SWEEP_X = tidx.local[0];
-        SWEEP_Y = tidx.tile[0];
-        SWEEP_Z = tidx.tile[1];
-
+	SWEEP_X = tidx.local[0];
+	SWEEP_Y = tidx.tile[0];
+	SWEEP_Z = tidx.tile[1];
+	
 	float temp_swp, tempC, tempN, tempS, tempE, tempW, tempT, tempB;
 	float tempNE, tempNW, tempSE, tempSW, tempNT, tempNB, tempST ;
 	float tempSB, tempET, tempEB, tempWT, tempWB ;
@@ -35,14 +38,16 @@ void performStreamCollide_kernel( tiled_index<3>& tidx,
 	//This is a gather operation of the SCATTER preprocessor variable
         // is undefined in layout_config.h, or a "local" read otherwise
 	tempC = SRC_C(srcGrid);
+
 	tempN = SRC_N(srcGrid);
 	tempS = SRC_S(srcGrid);
 	tempE = SRC_E(srcGrid);
 	tempW = SRC_W(srcGrid);
 	tempT = SRC_T(srcGrid);
 	tempB = SRC_B(srcGrid);
-	tempNE= SRC_NE(srcGrid);
-	tempNW= SRC_NW(srcGrid);
+
+	tempNE = SRC_NE(srcGrid);
+	tempNW = SRC_NW(srcGrid);
 	tempSE = SRC_SE(srcGrid);
 	tempSW = SRC_SW(srcGrid);
 	tempNT = SRC_NT(srcGrid);
@@ -56,6 +61,7 @@ void performStreamCollide_kernel( tiled_index<3>& tidx,
 
 	//Test whether the cell is fluid or obstacle
 	if( TEST_FLAG_SWEEP( srcGrid, OBSTACLE )) {
+		
 		//Swizzle the inputs: reflect any fluid coming into this cell
 		// back to where it came from
 		temp_swp = tempN ; tempN = tempS ; tempS = temp_swp ;
@@ -69,6 +75,7 @@ void performStreamCollide_kernel( tiled_index<3>& tidx,
 		temp_swp = tempEB ; tempEB = tempWT ; tempWT = temp_swp;
 	}
 	else {
+
                 //The math meat of LBM: ignore for optimization
 	        float ux, uy, uz, rho, u2;
 		float temp1, temp2, temp_base;
@@ -88,29 +95,33 @@ void performStreamCollide_kernel( tiled_index<3>& tidx,
 			+ tempSE - tempSW
 			+ tempET + tempEB
 			- tempWT - tempWB;
+
 		uy = + tempN - tempS
 			+ tempNE + tempNW
 			- tempSE - tempSW
 			+ tempNT + tempNB
 			- tempST - tempSB;
+
 		uz = + tempT - tempB
 			+ tempNT - tempNB
 			+ tempST - tempSB
 			+ tempET - tempEB
-			+ tempWT - tempWB;
-
+			+ tempWT - tempWB;		
+		
 		ux /= rho;
 		uy /= rho;
 		uz /= rho;
+
 		if( TEST_FLAG_SWEEP( srcGrid, ACCEL )) {
+
 			ux = 0.005f;
 			uy = 0.002f;
 			uz = 0.000f;
 		}
+
 		u2 = 1.5f * (ux*ux + uy*uy + uz*uz) - 1.0f;
 		temp_base = OMEGA*rho;
 		temp1 = DFL1*temp_base;
-
 
 		//Put the output values for this cell in the shared memory
 		temp_base = OMEGA*rho;
@@ -165,4 +176,4 @@ void performStreamCollide_kernel( tiled_index<3>& tidx,
 	DST_WB( dstGrid ) = tempWB;
 }
 
-#endif // LBM_KERNEL_CU
+#endif // LBM_KERNEL_HCC

@@ -13,6 +13,6 @@ include $(PARBOIL_ROOT)/common/platform/c.default.mk
 HCC_BIN=$(HCC_BUILD_PATH)/compiler/bin/clang++
 
 # Flags
-PLATFORM_CXXFLAGS=-hc -std=c++amp -stdlib=libc++ -I$(HCC_SOURCE_PATH)/include -ggdb
+PLATFORM_CXXFLAGS=-hc -std=c++amp -stdlib=libc++ -I$(HCC_SOURCE_PATH)/include -ggdb -g3
 PLATFORM_LDFLAGS=-lm -lpthread -L$(HCC_BUILD_PATH)/lib -Wl,--rpath=$(HCC_BUILD_PATH)/lib\
                  -lc++ -lc++abi -lm -ldl -lpthread -Wl,--whole-archive -lmcwamp -Wl,--no-whole-archive

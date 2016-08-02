@@ -17,6 +17,10 @@
 #define TRUE (-1)
 #define FALSE (0)
 
+#define DFL1 (1.0f/ 3.0f)
+#define DFL2 (1.0f/18.0f)
+#define DFL3 (1.0f/36.0f)
+
 /*############################################################################*/
 
 typedef float* LBM_Grid;//float LBM_Grid[PADDED_Z*PADDED_Y*PADDED_X*N_CELL_ENTRIES];
@@ -111,7 +115,7 @@ typedef LBM_Grid* LBM_GridPtr;
 #define DST_WT(g) (NEIGHBOR_WT( g, WT ))
 #define DST_WB(g) (NEIGHBOR_WB( g, WB ))
 
-#else /* SCATTER */
+#else /* GATHER */
 
 #define SRC_C(g)  (NEIGHBOR_C ( g, C  ))
 #define SRC_N(g)  (NEIGHBOR_S ( g, N  ))
@@ -153,7 +157,7 @@ typedef LBM_Grid* LBM_GridPtr;
 #define DST_WT(g) (LOCAL( g, WT ))
 #define DST_WB(g) (LOCAL( g, WB ))
 
-#endif /* SCATTER */
+#endif /* GATHER */
 
 #define MAGIC_CAST(v) ((unsigned int*) ((void*) (&(v))))
 #define FLAG_VAR(v) unsigned int* _aux_ = MAGIC_CAST(v)

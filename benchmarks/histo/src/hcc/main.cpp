@@ -105,7 +105,7 @@ int main(int argc, char* argv[]) {
 
   array_view<unsigned int> input(even_width*(((img_height+UNROLL-1)/UNROLL)*UNROLL));
   array_view<uchar4> sm_mappings(img_width*img_height);
-  array_view<unsigned int> global_subhisto(img_width*histo_height);
+  array_view<unsigned int> global_subhisto(BLOCK_X*img_width*histo_height);
   array_view<unsigned short> global_histo(img_width*histo_height);
   array_view<unsigned int> global_overflow(img_width*histo_height);
   array_view<unsigned char> final_histo(img_width*histo_height);

@@ -13,54 +13,23 @@
 
 /*############################################################################*/
 
-
-/*############################################################################*/
-
-typedef enum {C = 0,
-              N, S, E, W, T, B,
-              NE, NW, SE, SW,
-              NT, NB, ST, SB,
-              ET, EB, WT, WB,
-              FLAGS, N_CELL_ENTRIES} CELL_ENTRIES;
-#define N_DISTR_FUNCS FLAGS
-
-typedef enum {OBSTACLE    = 1 << 0,
-              ACCEL       = 1 << 1,
-              IN_OUT_FLOW = 1 << 2} CELL_FLAGS;
-
-
-#include <hc.hpp>
-#include "layout_config.h"
-#include "lbm_macros.h"
-
-using namespace hc;
-
-/*############################################################################*/
-#ifdef __cplusplus
-extern "C" {
-#endif
 void LBM_allocateGrid( float** ptr );
 void LBM_freeGrid( float** ptr );
-void LBM_initializeGrid( LBM_Grid grid );
-void LBM_initializeSpecialCellsForLDC( LBM_Grid grid );
-void LBM_loadObstacleFile( LBM_Grid grid, const char* filename );
-void LBM_swapGrids( array_view<float> &grid1, array_view<float> &grid2 );
-void LBM_showGridStatistics( LBM_Grid Grid );
-void LBM_storeVelocityField( LBM_Grid grid, const char* filename,
+void LBM_initializeGrid( float* grid );
+void LBM_initializeSpecialCellsForLDC( float* grid );
+void LBM_loadObstacleFile( float* grid, const char* filename );
+void LBM_swapGrids( array_view<float>** grid1, array_view<float>** grid2 );
+void LBM_showGridStatistics( float* Grid );
+void LBM_storeVelocityField( float* grid, const char* filename,
                            const BOOL binary );
 
-/* HCC ***********************************************************************/
+/* HCC *********************************************************************/
 
-void HCC_LBM_allocateGrid( array_view<float>* ptr );
+void HCC_LBM_allocateGrid(array_view<float>** ptr );
 void HCC_LBM_freeGrid( array_view<float>* ptr );
-void HCC_LBM_initializeGrid( array_view<float>* d_grid, float** h_grid );
-void HCC_LBM_getDeviceGrid( array_view<float>* d_grid, float** h_grid );
+void HCC_LBM_initializeGrid( array_view<float>* d_grid, float* h_grid );
+void HCC_LBM_getDeviceGrid( array_view<float>* d_grid, float* h_grid );
 void HCC_LBM_performStreamCollide( array_view<float>& srcGrid, array_view<float>& dstGrid );
-#ifdef __cplusplus
-}
-#endif
-
-#define REAL_MARGIN (CALC_INDEX(0, 0, 2, 0) - CALC_INDEX(0,0,0,0))
 
 /*############################################################################*/
 

@@ -14,35 +14,31 @@
 #include <stdio.h>
 #include <string.h>
 #include <float.h>
+#include <hc.hpp>
+using namespace hc;
 
 // includes, project
+#include "layout_config.h"
+#include "lbm_macros.h"
 #include "lbm.h"
-#include "main.h"
-
-#define DFL1 (1.0f/ 3.0f)
-#define DFL2 (1.0f/18.0f)
-#define DFL3 (1.0f/36.0f)
-
-// includes, kernels
 #include "lbm_kernel.hpp"
 
-#define TOTAL_MARGIN (2*PADDED_X*PADDED_Y*N_CELL_ENTRIES)
-
 /******************************************************************************/
+
 void HCC_LBM_performStreamCollide( array_view<float>& srcGrid, array_view<float>& dstGrid ) {
-    int tile[3] = {SIZE_X, 1, 1};
-    int ext[3] = {SIZE_Y*SIZE_X, SIZE_Z, 1};
-    parallel_for_each(extent<3>(ext).tile(tile[0], tile[1], tile[2]),
-            [=] (tiled_index<3> tidx) [[hc]]
+	
+	int dimBlock[2] = {SIZE_X,1};
+	int dimGrid[2] = {SIZE_X*SIZE_Y,SIZE_Z};
+    parallel_for_each(extent<2>(dimGrid).tile(SIZE_X, 1),
+            [=] (tiled_index<2> tidx) [[hc]]
             {
-            performStreamCollide_kernel(tidx, srcGrid, dstGrid);
+                performStreamCollide_kernel(tidx, srcGrid, dstGrid);
             });
 }
-
 /*############################################################################*/
 
 void LBM_allocateGrid( float** ptr ) {
-	const size_t size   = TOTAL_PADDED_CELLS*N_CELL_ENTRIES*sizeof( float ) + 2*TOTAL_MARGIN*sizeof( float );
+	const size_t size   = TOTAL_PADDED_CELLS*N_CELL_ENTRIES*sizeof( float );
 
 	*ptr = (float*)malloc( size );
 	if( ! *ptr ) {
@@ -55,33 +51,33 @@ void LBM_allocateGrid( float** ptr ) {
 
 	printf( "LBM_allocateGrid: allocated %.1f MByte\n",
 			size / (1024.0*1024.0) );
-	*ptr += REAL_MARGIN;
+	
+	*ptr += MARGIN;
 }
 
 /******************************************************************************/
 
-void HCC_LBM_allocateGrid( array_view<float>* ptr ) {
-	const size_t size = TOTAL_PADDED_CELLS*N_CELL_ENTRIES + 2*TOTAL_MARGIN;
-    *ptr = array_view<float>(size);
-    *ptr = ptr->section(REAL_MARGIN, size - REAL_MARGIN);
+void HCC_LBM_allocateGrid( array_view<float>** ptr ) {
+	const size_t size = TOTAL_PADDED_CELLS*N_CELL_ENTRIES;
+    *ptr = new array_view<float>(size);
 }
 
 /*############################################################################*/
 
 void LBM_freeGrid( float** ptr ) {
-	free( *ptr-REAL_MARGIN );
+	free( *ptr-MARGIN );
 	*ptr = NULL;
 }
 
 /******************************************************************************/
 
-void HCC_LBM_freeGrid( array_view<float>* ptr ) {
-	*ptr = array_view<float>(0);
+void HCC_LBM_freeGrid(array_view<float>* ptr) {
+    delete ptr;
 }
 
 /*############################################################################*/
 
-void LBM_initializeGrid( LBM_Grid grid ) {
+void LBM_initializeGrid( float* grid ) {
 	SWEEP_VAR
 
 	SWEEP_START( 0, 0, 0, 0, 0, SIZE_Z )
@@ -104,35 +100,35 @@ void LBM_initializeGrid( LBM_Grid grid ) {
 	SRC_EB( grid ) = DFL3;
 	SRC_WT( grid ) = DFL3;
 	SRC_WB( grid ) = DFL3;
-
+	
 	CLEAR_ALL_FLAGS_SWEEP( grid );
 	SWEEP_END
 }
 
 /******************************************************************************/
 
-void HCC_LBM_initializeGrid( array_view<float>* d_grid, float** h_grid ) {
-	const size_t size   = TOTAL_PADDED_CELLS*N_CELL_ENTRIES + 2*TOTAL_MARGIN;
-    memmove(d_grid->data() - REAL_MARGIN, *h_grid - REAL_MARGIN, size * sizeof(float));
+void HCC_LBM_initializeGrid( array_view<float>* d_grid, float* h_grid ) {
+	const size_t size = TOTAL_PADDED_CELLS*N_CELL_ENTRIES;
+    (*d_grid)[0] = 1;
+    copy(h_grid - MARGIN, h_grid - MARGIN + size, *d_grid);
 }
 
-void HCC_LBM_getDeviceGrid( array_view<float>* d_grid, float** h_grid ) {
-	const size_t size   = TOTAL_PADDED_CELLS*N_CELL_ENTRIES + 2*TOTAL_MARGIN;
-    d_grid->synchronize();
-	memmove(*h_grid - REAL_MARGIN, d_grid->data() - REAL_MARGIN, size * sizeof(float));
-}
-
-/*############################################################################*/
-
-void LBM_swapGrids( array_view<float>& grid1, array_view<float>& grid2 ) {
-	array_view<float> aux = std::move(grid1);
-	grid1 = std::move(grid2);
-	grid2 = std::move(aux);
+void HCC_LBM_getDeviceGrid( array_view<float>* d_grid, float* h_grid ) {
+	const size_t size = TOTAL_PADDED_CELLS*N_CELL_ENTRIES;
+    copy(*d_grid, h_grid - MARGIN);
 }
 
 /*############################################################################*/
 
-void LBM_loadObstacleFile( LBM_Grid grid, const char* filename ) {
+void LBM_swapGrids( array_view<float>** grid1, array_view<float>** grid2 ) {
+	array_view<float>* aux = *grid1;
+	*grid1 = *grid2;
+	*grid2 = aux;
+}
+
+/*############################################################################*/
+
+void LBM_loadObstacleFile( float* grid, const char* filename ) {
 	int x,  y,  z;
 
 	FILE* file = fopen( filename, "rb" );
@@ -152,7 +148,7 @@ void LBM_loadObstacleFile( LBM_Grid grid, const char* filename ) {
 
 /*############################################################################*/
 
-void LBM_initializeSpecialCellsForLDC( LBM_Grid grid ) {
+void LBM_initializeSpecialCellsForLDC( float* grid ) {
 	int x,  y,  z;
 
 	for( z = -2; z < SIZE_Z+2; z++ ) {
@@ -177,7 +173,7 @@ void LBM_initializeSpecialCellsForLDC( LBM_Grid grid ) {
 
 /*############################################################################*/
 
-void LBM_showGridStatistics( LBM_Grid grid ) {
+void LBM_showGridStatistics( float* grid ) {
 	int nObstacleCells = 0,
 	    nAccelCells    = 0,
 	    nFluidCells    = 0;
@@ -199,6 +195,7 @@ void LBM_showGridStatistics( LBM_Grid grid ) {
 		+ LOCAL( grid, SB ) + LOCAL( grid, ET )
 		+ LOCAL( grid, EB ) + LOCAL( grid, WT )
 		+ LOCAL( grid, WB );
+
 	if( rho < minRho ) minRho = rho;
 	if( rho > maxRho ) maxRho = rho;
 	mass += rho;
@@ -264,7 +261,26 @@ static void storeValue( FILE* file, OUTPUT_PRECISION* v ) {
 
 /*############################################################################*/
 
-void LBM_storeVelocityField( LBM_Grid grid, const char* filename,
+static void loadValue( FILE* file, OUTPUT_PRECISION* v ) {
+	const int litteBigEndianTest = 1;
+	if( (*((unsigned char*) &litteBigEndianTest)) == 0 ) {         /* big endian */
+		char* vPtr = (char*) v;
+		char buffer[sizeof( OUTPUT_PRECISION )];
+		int i;
+
+		fread( buffer, sizeof( OUTPUT_PRECISION ), 1, file );
+
+		for (i = 0; i < sizeof( OUTPUT_PRECISION ); i++)
+			vPtr[i] = buffer[sizeof( OUTPUT_PRECISION ) - i - 1];
+	}
+	else {                                                     /* little endian */
+		fread( v, sizeof( OUTPUT_PRECISION ), 1, file );
+	}
+}
+
+/*############################################################################*/
+
+void LBM_storeVelocityField( float* grid, const char* filename,
 		const int binary ) {
 	OUTPUT_PRECISION rho, ux, uy, uz;
 
@@ -317,4 +333,3 @@ void LBM_storeVelocityField( LBM_Grid grid, const char* filename,
 
 	fclose( file );
 }
-
